@@ -2,6 +2,7 @@ import base64
 import html
 from pathlib import Path
 from io import BytesIO
+from datetime import date
 
 import pandas as pd
 import plotly.express as px
@@ -109,6 +110,34 @@ def mes_key(m):
 
 def ordenar_meses(meses):
     return sorted([m for m in meses if pd.notna(m)], key=mes_key)
+
+
+def mes_para_data(m):
+    """Converte rótulos como jan/26 em uma data no primeiro dia do mês."""
+    m_norm = normalizar_mes(m)
+    try:
+        abrev, ano = m_norm.split('/')
+        mes = MESES_ORDEM.get(abrev[:3])
+        if mes is None:
+            return None
+        ano_int = int(ano)
+        if ano_int < 100:
+            ano_int += 2000
+        return date(ano_int, mes, 1)
+    except Exception:
+        return None
+
+
+def filtrar_meses_fechados(meses):
+    """Mantém somente meses encerrados, excluindo automaticamente o mês atual e meses futuros."""
+    hoje = date.today()
+    inicio_mes_atual = date(hoje.year, hoje.month, 1)
+    fechados = []
+    for mes in meses:
+        dt = mes_para_data(mes)
+        if dt is not None and dt < inicio_mes_atual:
+            fechados.append(mes)
+    return ordenar_meses(fechados)
 
 
 def safe_read_excel(file_or_path):
@@ -424,8 +453,22 @@ pagina = st.sidebar.radio(
 st.sidebar.markdown("---")
 st.sidebar.caption(f"Fonte: {fonte}")
 
-if meses:
-    meses_sel = st.sidebar.multiselect("Meses", meses, default=meses)
+meses_fechados = filtrar_meses_fechados(meses)
+
+if meses_fechados:
+    meses_sel = st.sidebar.multiselect(
+        "Meses",
+        meses_fechados,
+        default=meses_fechados,
+        help="Filtro automático: exibe somente meses fechados, sem considerar o mês atual."
+    )
+elif meses:
+    meses_sel = st.sidebar.multiselect(
+        "Meses",
+        meses,
+        default=meses,
+        help="Não foi possível identificar meses fechados; exibindo todos os meses disponíveis."
+    )
 else:
     meses_sel = []
 
