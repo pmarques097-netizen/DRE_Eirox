@@ -416,7 +416,8 @@ def botao_logout_sidebar():
     nome = st.session_state.get("nome_usuario", "Usuário")
     perfil = st.session_state.get("perfil", "")
     st.sidebar.markdown("<div class='sidebar-section'>Acesso</div>", unsafe_allow_html=True)
-    st.sidebar.caption(f"Bem-vindo, {nome}")
+    st.sidebar.caption(f"Usuário: {nome}")
+    st.sidebar.caption(f"Perfil: {perfil}")
     if st.sidebar.button("Sair", use_container_width=True):
         for k in ["autenticado", "usuario", "nome_usuario", "perfil"]:
             st.session_state.pop(k, None)
