@@ -1,4 +1,5 @@
 import base64
+import html
 from pathlib import Path
 from io import BytesIO
 
@@ -18,6 +19,7 @@ st.set_page_config(
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_FILE = BASE_DIR / "data" / "DRE_Consolidado_Moderno.xlsx"
+DATA_FILE_ROOT = BASE_DIR / "DRE_Consolidado_Moderno.xlsx"
 LOGO_FILE = BASE_DIR / "assets" / "logo_eirox.png"
 
 MESES_ORDEM = {
@@ -145,6 +147,8 @@ def escolher_arquivo():
         return carregar_workbook_from_bytes(uploaded.getvalue()), "Arquivo enviado"
     if DATA_FILE.exists():
         return carregar_workbook_from_path(str(DATA_FILE)), str(DATA_FILE)
+    if DATA_FILE_ROOT.exists():
+        return carregar_workbook_from_path(str(DATA_FILE_ROOT)), str(DATA_FILE_ROOT)
     return {}, "Nenhum arquivo encontrado"
 
 
@@ -208,6 +212,116 @@ def montar_dre_para_tabela(dre_estruturada, meses_selecionados):
     display = df.drop(columns=[c for c in ["Ordem", "Seção", "Nível", "Tipo"] if c in df.columns])
     return display
 
+
+
+def classe_linha_dre(linha):
+    texto = str(linha).upper()
+    # Subtotais principais em amarelo executivo
+    if "(=)" in texto or "LUCRO" in texto or "EBITDA" in texto or "LAIR" in texto:
+        return "subtotal"
+    # Blocos principais em azul Eirox claro
+    if texto.startswith(("1.", "2.", "4.", "6.", "8.", "10.")):
+        return "bloco"
+    # Agrupadores internos
+    if texto in [
+        "DESPESAS COM PESSOAL",
+        "DESPESAS ADMINISTRATIVAS E OCUPAÇÃO",
+        "DESPESAS COM VENDAS E MARKETING",
+    ]:
+        return "grupo"
+    return "normal"
+
+
+def render_tabela_dre_html(tabela: pd.DataFrame, height: int = 720) -> str:
+    """Renderiza a DRE em HTML puro para evitar erro de DOM/removeChild do Streamlit."""
+    if tabela.empty:
+        return ""
+
+    cols = [str(c) for c in tabela.columns]
+    html_rows = []
+    for _, row in tabela.iterrows():
+        linha = str(row.get("Linha DRE", ""))
+        cls = classe_linha_dre(linha)
+        cells = []
+        for i, col in enumerate(cols):
+            val = "" if pd.isna(row.get(col, "")) else str(row.get(col, ""))
+            val = html.escape(val)
+            extra = " first-col" if i == 0 else ""
+            cells.append(f"<td class='{extra}'>{val}</td>")
+        html_rows.append(f"<tr class='{cls}'>" + "".join(cells) + "</tr>")
+
+    ths = []
+    for i, col in enumerate(cols):
+        extra = " first-col" if i == 0 else ""
+        ths.append(f"<th class='{extra}'>{html.escape(col)}</th>")
+
+    return f"""
+<style>
+.dre-table-wrap {{
+    width: 100%;
+    max-height: {height}px;
+    overflow: auto;
+    border: 1px solid rgba(0,175,255,.25);
+    border-radius: 18px;
+    background: #0E1A2B;
+    box-shadow: 0 18px 45px rgba(0,0,0,.30);
+}}
+table.dre-table {{
+    width: max-content;
+    min-width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 15px;
+    color: #F8FBFF;
+}}
+.dre-table th {{
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    background: #171C27;
+    color: #B9C3D0;
+    text-align: left;
+    font-weight: 700;
+    padding: 12px 12px;
+    border-bottom: 1px solid rgba(255,255,255,.12);
+    border-right: 1px solid rgba(255,255,255,.10);
+    white-space: nowrap;
+}}
+.dre-table td {{
+    padding: 11px 12px;
+    border-bottom: 1px solid rgba(255,255,255,.08);
+    border-right: 1px solid rgba(255,255,255,.08);
+    white-space: nowrap;
+    font-weight: 500;
+}}
+.dre-table .first-col {{
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    min-width: 360px;
+    max-width: 520px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}}
+.dre-table th.first-col {{ z-index: 6; }}
+.dre-table tr.normal td {{ background: #0E1A2B; color: #F8FBFF; }}
+.dre-table tr.normal td.first-col {{ background: #0E1A2B; }}
+.dre-table tr.bloco td {{ background: #D9EAFF; color: #06101D; font-weight: 900; }}
+.dre-table tr.bloco td.first-col {{ background: #D9EAFF; }}
+.dre-table tr.subtotal td {{ background: #FFD11A; color: #06101D; font-weight: 950; }}
+.dre-table tr.subtotal td.first-col {{ background: #FFD11A; }}
+.dre-table tr.grupo td {{ background: #263243; color: #FFFFFF; font-weight: 900; font-style: italic; }}
+.dre-table tr.grupo td.first-col {{ background: #263243; }}
+.dre-table tr:hover td {{ filter: brightness(1.08); }}
+</style>
+<div class="dre-table-wrap">
+<table class="dre-table">
+<thead><tr>{''.join(ths)}</tr></thead>
+<tbody>{''.join(html_rows)}</tbody>
+</table>
+</div>
+"""
 
 def row_style(row):
     linha = str(row.get("Linha DRE", "")).upper()
@@ -324,7 +438,7 @@ with col_logo:
     if LOGO_FILE.exists():
         st.image(str(LOGO_FILE), use_container_width=True)
 with col_title:
-    st.markdown("<h1 class='eirox-title'>DRE Online Enterprise</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 class='eirox-title'>DRE Empresa Online</h1>", unsafe_allow_html=True)
     st.markdown("<div class='eirox-subtitle'>Dashboard financeiro gerencial no padrão Eirox Pricing Online • DRE moderno com meses em colunas, auditoria e indicadores executivos.</div>", unsafe_allow_html=True)
 st.markdown("</div>", unsafe_allow_html=True)
 
@@ -378,8 +492,8 @@ elif pagina == "📈 DRE Gerencial":
     if tabela.empty:
         st.warning("A aba DRE_ESTRUTURADA não foi encontrada ou está vazia.")
     else:
-        styler = tabela.style.apply(row_style, axis=1)
-        st.dataframe(styler, use_container_width=True, height=720)
+        # Tabela HTML estável: evita o erro de navegador/Streamlit "removeChild"
+        st.markdown(render_tabela_dre_html(tabela, height=720), unsafe_allow_html=True)
 
 elif pagina == "🏪 Resultado por Loja":
     st.markdown("<div class='section-title'>Resultado por Loja</div>", unsafe_allow_html=True)
