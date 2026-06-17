@@ -1,457 +1,448 @@
-# -*- coding: utf-8 -*-
-"""
-Eirox DRE Online - Atualização automática pelas pastas locais
-Execute na pasta C:\\Users\\Comercial\\Desktop\\Dre com:
-    streamlit run app.py
-"""
-
-from __future__ import annotations
 
 import base64
-import re
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from datetime import datetime
+import re
 
 import pandas as pd
-import plotly.express as px
 import streamlit as st
 
-# =========================
-# CONFIGURAÇÃO GERAL
-# =========================
-st.set_page_config(
-    page_title="Eirox DRE Online",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="Eirox DRE Online", page_icon="📊", layout="wide")
 
-PASTAS_OBRIGATORIAS = [
+REQUIRED_FOLDERS = [
     "CONTAS A PAGAR - DRE",
     "PLANO DE CONTAS - LEGENDA",
     "POSIÇÃO DE ESTOQUE",
     "VENDA POR PAGAMENTO",
 ]
 
-MESES_PT = {
-    1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai", 6: "jun",
-    7: "jul", 8: "ago", 9: "set", 10: "out", 11: "nov", 12: "dez",
+MONTH_MAP = {
+    "jan": 1, "janeiro": 1,
+    "fev": 2, "fevereiro": 2,
+    "mar": 3, "março": 3, "marco": 3,
+    "abr": 4, "abril": 4,
+    "mai": 5, "maio": 5,
+    "jun": 6, "junho": 6,
+    "jul": 7, "julho": 7,
+    "ago": 8, "agosto": 8,
+    "set": 9, "setembro": 9,
+    "out": 10, "outubro": 10,
+    "nov": 11, "novembro": 11,
+    "dez": 12, "dezembro": 12,
 }
-MESES_NOME = {
-    "JANEIRO": 1, "FEVEREIRO": 2, "MARÇO": 3, "MARCO": 3, "ABRIL": 4, "MAIO": 5, "JUNHO": 6,
-    "JULHO": 7, "AGOSTO": 8, "SETEMBRO": 9, "OUTUBRO": 10, "NOVEMBRO": 11, "DEZEMBRO": 12,
-}
 
-# =========================
-# ESTILO
-# =========================
-st.markdown(
-    """
-    <style>
-    .stApp { background: #07111f; color: #f8fafc; }
-    [data-testid="stSidebar"] { background: #050b14; border-right: 1px solid #12375b; }
-    .main .block-container { padding-top: 1.4rem; max-width: 1500px; }
-    h1, h2, h3 { color: #f8fafc !important; font-weight: 800 !important; }
-    .subtitulo { color:#93c5fd; font-size:18px; text-align:center; margin-top:-10px; }
-    .card {
-        background: linear-gradient(180deg,#101b2c,#0a1526);
-        border:1px solid #1f3b5c; border-radius:18px; padding:18px;
-        box-shadow: 0 10px 28px rgba(0,0,0,.22);
-    }
-    .kpi-title { color:#94a3b8; font-size:14px; font-weight:700; text-transform:uppercase; }
-    .kpi-value { color:#ffffff; font-size:27px; font-weight:900; margin-top:5px; }
-    .kpi-sub { color:#38bdf8; font-size:13px; margin-top:4px; }
-    .ok { color:#22c55e; font-weight:800; }
-    .bad { color:#fb7185; font-weight:800; }
-    .dre-wrap { overflow-x:auto; border:1px solid #173554; border-radius:16px; background:#081426; }
-    table.dre { border-collapse:collapse; width:100%; min-width:1300px; font-size:15px; }
-    table.dre th { position:sticky; top:0; background:#171b24; color:#cbd5e1; padding:12px 10px; border:1px solid #263244; text-align:left; white-space:nowrap; font-weight:700; }
-    table.dre td { padding:11px 10px; border:1px solid #203149; white-space:nowrap; color:#f8fafc; }
-    table.dre td.num { text-align:right; font-variant-numeric: tabular-nums; }
-    table.dre tr.item { background:#0b1729; }
-    table.dre tr.bloco { background:#cfe0f3; }
-    table.dre tr.bloco td { color:#07111f; font-weight:900; }
-    table.dre tr.resultado { background:#ffd21a; }
-    table.dre tr.resultado td { color:#05111f; font-weight:950; }
-    table.dre tr.grupo { background:#263241; }
-    table.dre tr.grupo td { color:#ffffff; font-weight:900; font-style:italic; }
-    table.dre tr:hover { filter: brightness(1.08); }
-    .footer-note { color:#94a3b8; font-size:13px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+def fmt_brl(v):
+    try:
+        v = float(v)
+    except Exception:
+        return "R$ 0,00"
+    s = f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"R$ {s}"
 
-# =========================
-# FUNÇÕES BASE
-# =========================
-def encontrar_pasta_base() -> Path:
-    candidatos = [
-        Path.cwd(),
-        Path(__file__).resolve().parent if "__file__" in globals() else Path.cwd(),
-        Path(__file__).resolve().parent.parent if "__file__" in globals() else Path.cwd().parent,
-        Path.home() / "Desktop" / "Dre",
-        Path.home() / "Área de Trabalho" / "Dre",
-        Path.home() / "Area de Trabalho" / "Dre",
-        Path(r"C:\Users\Comercial\Desktop\Dre"),
-    ]
-    for p in candidatos:
-        if all((p / pasta).exists() for pasta in PASTAS_OBRIGATORIAS):
-            return p
-    return Path.cwd()
+def fmt_pct(v):
+    try:
+        v = float(v)
+    except Exception:
+        return "0,00%"
+    if abs(v) <= 1:
+        v *= 100
+    return f"{v:.2f}%".replace(".", ",")
 
-PASTA_BASE = encontrar_pasta_base()
-
-
-def normalize(txt) -> str:
-    if pd.isna(txt):
+def norm_txt(x):
+    if pd.isna(x):
         return ""
-    s = str(txt).strip().upper()
-    mapa = str.maketrans("ÁÀÂÃÉÊÍÓÔÕÚÜÇ", "AAAAEEIOOOUUC")
-    s = s.translate(mapa)
-    s = re.sub(r"\s+", " ", s)
-    return s
+    s = str(x).strip().lower()
+    tr = str.maketrans("áàâãéêíóôõúç", "aaaaeeiooouc")
+    return s.translate(tr)
 
-
-def fmt_brl(v) -> str:
-    try:
-        v = float(v)
-    except Exception:
-        v = 0.0
-    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def fmt_pct(v) -> str:
-    try:
-        v = float(v)
-    except Exception:
-        v = 0.0
-    return f"{v*100:,.2f}%".replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def limpar_valor(x) -> float:
+def money_to_float(x):
     if pd.isna(x):
         return 0.0
     if isinstance(x, (int, float)):
         return float(x)
     s = str(x).strip().replace("R$", "").replace("%", "")
-    if s in ["-", "", "nan", "None"]:
-        return 0.0
     s = s.replace(".", "").replace(",", ".")
+    s = re.sub(r"[^0-9\.-]", "", s)
     try:
         return float(s)
     except Exception:
         return 0.0
 
+def month_key(m):
+    s = norm_txt(m)
+    match = re.search(r"(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-zç]*[/-]?(\d{2,4})?", s)
+    if not match:
+        return (9999, 99)
+    mes = MONTH_MAP.get(match.group(1), 99)
+    yy = match.group(2)
+    ano = 2000 + int(yy) if yy and len(yy) == 2 else int(yy) if yy else 9999
+    return (ano, mes)
 
-def ler_excel_pasta(pasta: Path) -> pd.DataFrame:
-    if not pasta.exists():
-        return pd.DataFrame()
-    arquivos = [a for a in list(pasta.rglob("*.xlsx")) + list(pasta.rglob("*.xls")) if not a.name.startswith("~$")]
-    bases = []
-    for arq in arquivos:
-        try:
-            df = pd.read_excel(arq)
-            df.columns = [str(c).strip().replace("\n", " ") for c in df.columns]
-            df["Arquivo Origem"] = arq.name
-            df["Caminho Origem"] = str(arq)
-            bases.append(df)
-        except Exception as e:
-            st.sidebar.warning(f"Falha ao ler {arq.name}: {e}")
-    return pd.concat(bases, ignore_index=True) if bases else pd.DataFrame()
-
-
-def localizar_coluna(df: pd.DataFrame, opcoes: List[str]) -> str | None:
-    if df.empty:
-        return None
-    norm_cols = {normalize(c): c for c in df.columns}
-    for op in opcoes:
-        n = normalize(op)
-        if n in norm_cols:
-            return norm_cols[n]
-    for c in df.columns:
-        nc = normalize(c)
-        if any(normalize(op) in nc for op in opcoes):
-            return c
-    return None
-
-
-def mes_from_filename(nome: str, ano_padrao: int = 2026) -> str | None:
-    n = normalize(nome)
-    for mes_nome, mes_num in MESES_NOME.items():
-        if mes_nome in n:
-            return f"{MESES_PT[mes_num]}/{str(ano_padrao)[-2:]}"
-    m = re.search(r"(20\d{2})[-_ ]?(0[1-9]|1[0-2])", n)
-    if m:
-        ano = int(m.group(1)); mes = int(m.group(2))
-        return f"{MESES_PT[mes]}/{str(ano)[-2:]}"
-    return None
-
-
-def detectar_mes(df: pd.DataFrame, arquivo_col="Arquivo Origem") -> pd.Series:
-    # tenta colunas explícitas de mês/data
-    col_mes = localizar_coluna(df, ["Ano-mês", "Ano Mes", "Mes", "Mês", "Mês Referência", "Mes Referencia", "Competência", "Competencia"])
-    if col_mes:
-        def conv(v):
-            if pd.isna(v): return None
-            s = str(v).strip()
-            ns = normalize(s)
-            # jan/26
-            m = re.search(r"(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)[A-Z]*[/-]?(\d{2,4})", ns)
-            if m:
-                mes_txt = m.group(1)[:3].lower()
-                ano = m.group(2)[-2:]
-                if mes_txt == "jun": mes_txt = "jun"
-                return f"{mes_txt}/{ano}"
-            dt = pd.to_datetime(v, errors="coerce", dayfirst=True)
-            if pd.notna(dt):
-                return f"{MESES_PT[int(dt.month)]}/{str(int(dt.year))[-2:]}"
-            return None
-        serie = df[col_mes].apply(conv)
-    else:
-        serie = pd.Series([None] * len(df), index=df.index)
-
-    # fallback pelo nome do arquivo
-    if arquivo_col in df.columns:
-        arquivo_mes = df[arquivo_col].apply(lambda x: mes_from_filename(str(x)))
-        serie = serie.fillna(arquivo_mes)
-    return serie
-
-
-def mes_ordem(mes: str) -> int:
-    if not mes or "/" not in str(mes):
-        return 999999
-    mtxt, ano = str(mes).split("/")[:2]
-    rev = {v: k for k, v in MESES_PT.items()}
-    return 2000 + int(ano) * 100 + rev.get(mtxt.lower()[:3], 99)
-
-
-def meses_fechados(meses: List[str]) -> List[str]:
+def is_current_month_label(m):
+    ano, mes = month_key(m)
     hoje = datetime.today()
-    atual = f"{MESES_PT[hoje.month]}/{str(hoje.year)[-2:]}"
-    return [m for m in sorted(set(meses), key=mes_ordem) if m != atual]
+    return ano == hoje.year and mes == hoje.month
 
-# =========================
-# CLASSIFICAÇÃO
-# =========================
-MAPEAMENTO = {
-    "ICMS": ["ICMS"],
-    "DAS": ["DAS"],
-    "ISSQN": ["ISSQN"],
-    "Mercadorias (CMP)": ["MERCADORIAS (CMP)", "MERCADORIA", "CMP", "CMV"],
-    "Alimentação": ["ALIMENTACAO"],
-    "Pagamento de Férias": ["PAGAMENTO DE FERIAS", "FERIAS"],
-    "FGTS": ["FGTS"],
-    "Salários Fixos + Horas Extras": ["SALARIOS FIXOS", "HORAS EXTRAS", "SALARIO"],
-    "Comissões e premiações": ["COMISSOES", "COMISSAO", "PREMIACOES", "PREMIACAO"],
-    "INSS": ["INSS"],
-    "IRRF Folha": ["IRRF FOLHA", "IRRF"],
-    "Cursos, Treinamentos, Viagens": ["CURSOS", "TREINAMENTOS", "VIAGENS"],
-    "PPRA<PCMSO e Exames": ["PPRA", "PCMSO", "EXAMES"],
-    "Rescisão (guia)": ["RESCISAO"],
-    "Provisão 13 e Férias": ["PROVISAO 13", "PROVISAO FERIAS"],
-    "Uniformes": ["UNIFORMES"],
-    "Vale Transporte": ["VALE TRANSPORTE"],
-    "Pro-Labore": ["PRO-LABORE", "PRO LABORE"],
-    "Outras Despesas com Pessoal": ["OUTRAS DESPESAS COM PESSOAL"],
-    "Aluguel&IPTU": ["ALUGUEL", "IPTU"],
-    "Seguro Imóvel": ["SEGURO IMOVEL"],
-    "Agua/Luz/Fone/Net": ["AGUA", "LUZ", "FONE", "NET", "ENERGIA", "INTERNET"],
-    "Combustível": ["COMBUSTIVEL"],
-    "Manutenção em Geral": ["MANUTENCAO EM GERAL"],
-    "Manutenção Veículos/Motos": ["MANUTENCAO VEICULOS", "MANUTENCAO MOTOS"],
-    "Mat. de Escritório/Informática": ["ESCRITORIO", "INFORMATICA"],
-    "Mat. De Limpeza": ["LIMPEZA"],
-    "Viagens": ["VIAGENS"],
-    "Contábil (Terceiros)": ["CONTABIL"],
-    "Sistemas (Terceiros)": ["SISTEMAS"],
-    "Juridico (Terceiros)": ["JURIDICO"],
-    "Assessorias/Consultorias/Treinamentos": ["ASSESSORIA", "CONSULTORIA", "TREINAMENTO"],
-    "Taxas, Licenças e Contrib.": ["TAXAS", "LICENCAS", "CONTRIB"],
-    "Outros (Terceiros)": ["OUTROS TERCEIROS"],
-    "Outros (Despesas)": ["OUTROS DESPESAS", "OUTRAS DESPESAS"],
-    "Quebra de caixa": ["QUEBRA DE CAIXA"],
-    "Marketing/Publicidade": ["MARKETING", "PUBLICIDADE"],
-    "Sistema Fidelidade": ["SISTEMA FIDELIDADE", "FIDELIDADE"],
-    "Frete": ["FRETE"],
-    "Associação de Classe (Royalties)": ["ASSOCIACAO DE CLASSE", "ROYALTIES"],
-    "Juros Boletos": ["JUROS BOLETOS", "JUROS"],
-    "Tarifas Bancarias": ["TARIFAS BANCARIAS", "TARIFA"],
-    "Taxas de Cartão (MDR)": ["TAXAS DE CARTAO", "MDR", "CARTAO"],
-    "IRPJ/CSLL": ["IRPJ", "CSLL"],
-}
+def closed_months(months):
+    return [m for m in months if not is_current_month_label(m)]
 
+def find_project_base():
+    """
+    Resolve o caminho certo em 3 cenários:
+    1) Execução local dentro de C:\\Users\\Comercial\\Desktop\\Dre
+    2) Execução local dentro de uma subpasta do projeto
+    3) Streamlit Cloud/GitHub, onde as pastas precisam estar dentro do repositório
+    """
+    here = Path(__file__).resolve().parent
+    candidates = [
+        Path.cwd(),
+        here,
+        here.parent,
+        Path.home() / "Desktop" / "Dre",
+        Path(r"C:\Users\Comercial\Desktop\Dre"),
+        Path("/mount/src/dre_eirox"),
+    ]
+    seen = []
+    for c in candidates:
+        if c not in seen:
+            seen.append(c)
+    for c in seen:
+        try:
+            if all((c / f).exists() for f in REQUIRED_FOLDERS):
+                return c, "pastas"
+        except Exception:
+            pass
+    # fallback: base com Excel consolidado
+    for c in seen:
+        if (c / "DRE_Consolidado_Moderno.xlsx").exists() or (c / "data" / "DRE_Consolidado_Moderno.xlsx").exists():
+            return c, "excel"
+    return here, "nenhum"
 
-def classificar_plano(plano: str) -> str:
-    t = normalize(plano)
-    if not t or t in ["NAN", "NONE"]:
-        return "NAO_CLASSIFICADO"
-    for linha, palavras in MAPEAMENTO.items():
-        if any(normalize(p) in t for p in palavras):
-            return linha
+BASE_DIR, BASE_MODE = find_project_base()
+
+def get_logo():
+    for p in [
+        BASE_DIR / "assets" / "logo_eirox.png",
+        BASE_DIR / "assets" / "logo eirox.png",
+        BASE_DIR / "logo_eirox.png",
+        BASE_DIR / "logo eirox.png",
+    ]:
+        if p.exists():
+            try:
+                return base64.b64encode(p.read_bytes()).decode()
+            except Exception:
+                return None
+    return None
+
+def read_all_excels(folder):
+    files = list(folder.rglob("*.xlsx")) + list(folder.rglob("*.xls"))
+    dfs = []
+    for f in files:
+        try:
+            df = pd.read_excel(f)
+            df["ARQUIVO_ORIGEM"] = f.name
+            df["PASTA_ORIGEM"] = folder.name
+            dfs.append(df)
+        except Exception:
+            pass
+    return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
+
+def find_col(df, names):
+    cols_norm = {norm_txt(c): c for c in df.columns}
+    for n in names:
+        nn = norm_txt(n)
+        if nn in cols_norm:
+            return cols_norm[nn]
+    # contains
+    for c in df.columns:
+        cn = norm_txt(c)
+        for n in names:
+            if norm_txt(n) in cn:
+                return c
+    return None
+
+def load_from_consolidated():
+    possible = [BASE_DIR / "data" / "DRE_Consolidado_Moderno.xlsx", BASE_DIR / "DRE_Consolidado_Moderno.xlsx"]
+    path = next((p for p in possible if p.exists()), None)
+    if not path:
+        return pd.DataFrame(), pd.DataFrame()
+    xls = pd.ExcelFile(path)
+    sheet = "DRE" if "DRE" in xls.sheet_names else xls.sheet_names[0]
+    dre = pd.read_excel(path, sheet_name=sheet)
+    nao = pd.read_excel(path, sheet_name="NAO_CLASSIFICADOS") if "NAO_CLASSIFICADOS" in xls.sheet_names else pd.DataFrame()
+    return dre, nao
+
+def classify_by_text(text):
+    t = norm_txt(text)
+    if any(k in t for k in ["icms"]): return "ICMS"
+    if "das" == t or "das " in t: return "DAS"
+    if "issqn" in t: return "ISSQN"
+    if any(k in t for k in ["mercadoria", "cmp", "cmv", "fornecedor"]): return "Mercadorias (CMP)"
+    if "fgts" in t: return "FGTS"
+    if any(k in t for k in ["salario", "hora extra"]): return "Salários Fixos + Horas Extras"
+    if any(k in t for k in ["comissao", "premiacao"]): return "Comissões e Premiações"
+    if "inss" in t: return "INSS"
+    if "irrf" in t: return "IRRF Folha"
+    if any(k in t for k in ["curso", "treinamento", "viagem"]): return "Cursos, Treinamentos, Viagens"
+    if any(k in t for k in ["rescisao"]): return "Rescisão (guia)"
+    if any(k in t for k in ["pro labore", "pro-labore"]): return "Pro-Labore"
+    if any(k in t for k in ["alimentacao"]): return "Alimentação"
+    if any(k in t for k in ["aluguel", "iptu"]): return "Aluguel&IPTU"
+    if any(k in t for k in ["seguro imovel"]): return "Seguro Imóvel"
+    if any(k in t for k in ["agua", "luz", "fone", "internet", "energia", "net"]): return "Agua/Luz/Fone/Net"
+    if "combustivel" in t: return "Combustível"
+    if "manutencao" in t and any(k in t for k in ["veiculo", "moto"]): return "Manutenção Veículos/Motos"
+    if "manutencao" in t: return "Manutenção em Geral"
+    if any(k in t for k in ["escritorio", "informatica"]): return "Mat. de Escritório/Informática"
+    if "limpeza" in t: return "Mat. De Limpeza"
+    if "contabil" in t: return "Contábil (Terceiros)"
+    if "sistema" in t and "fidelidade" not in t: return "Sistemas (Terceiros)"
+    if "juridico" in t: return "Juridico (Terceiros)"
+    if any(k in t for k in ["assessoria", "consultoria"]): return "Assessorias/Consultorias/Treinamentos"
+    if any(k in t for k in ["taxa", "licenca", "contrib"]): return "Taxas, Licenças e Contrib."
+    if any(k in t for k in ["marketing", "publicidade"]): return "Marketing/Publicidade"
+    if "fidelidade" in t: return "Sistema Fidelidade"
+    if "frete" in t: return "Frete"
+    if any(k in t for k in ["juros"]): return "Juros Boletos"
+    if "tarifa" in t: return "Tarifas Bancarias"
+    if any(k in t for k in ["cartao", "mdr"]): return "Taxas de Cartão (MDR)"
+    if any(k in t for k in ["irpj", "csll"]): return "IRPJ/CSLL"
+    if any(k in t for k in ["outros terceiros"]): return "Outros (Terceiros)"
+    if any(k in t for k in ["outros", "outras"]): return "Outros (Despesas)"
     return "NAO_CLASSIFICADO"
 
-# =========================
-# PROCESSAMENTO DINÂMICO
-# =========================
-@st.cache_data(show_spinner=False, ttl=0)
-def processar_dre(timestamp: float) -> Dict[str, pd.DataFrame]:
-    base = encontrar_pasta_base()
-    contas = ler_excel_pasta(base / "CONTAS A PAGAR - DRE")
-    plano_legenda = ler_excel_pasta(base / "PLANO DE CONTAS - LEGENDA")
-    estoque = ler_excel_pasta(base / "POSIÇÃO DE ESTOQUE")
-    vendas = ler_excel_pasta(base / "VENDA POR PAGAMENTO")
+STRUCTURE = [
+    ("1. RECEITA OPERACIONAL BRUTA", "total", "blue"),
+    ("Receita de Vendas de Mercadorias", "detail", ""),
+    ("2. (-) DEDUÇÕES DA RECEITA BRUTA", "total", "blue"),
+    ("ICMS", "detail", ""),
+    ("DAS", "detail", ""),
+    ("ISSQN", "detail", ""),
+    ("3. (=) RECEITA OPERACIONAL LÍQUIDA", "result", "yellow"),
+    ("4. (-) CUSTOS DAS VENDAS", "total", "blue"),
+    ("Mercadorias (CMP)", "detail", ""),
+    ("5. (=) LUCRO BRUTO", "result", "yellow"),
+    ("6. (-) DESPESAS OPERACIONAIS", "total", "blue"),
+    ("Despesas com Pessoal", "group", "gray"),
+    ("Alimentação", "detail", ""),
+    ("Pagamento de Férias", "detail", ""),
+    ("FGTS", "detail", ""),
+    ("Salários Fixos + Horas Extras", "detail", ""),
+    ("Comissões e Premiações", "detail", ""),
+    ("INSS", "detail", ""),
+    ("IRRF Folha", "detail", ""),
+    ("Cursos, Treinamentos, Viagens", "detail", ""),
+    ("PPRA<PCMSO e Exames", "detail", ""),
+    ("Rescisão (guia)", "detail", ""),
+    ("Provisão 13 e Férias", "detail", ""),
+    ("Uniformes", "detail", ""),
+    ("Vale Transporte", "detail", ""),
+    ("Pro-Labore", "detail", ""),
+    ("Outras Despesas com Pessoal", "detail", ""),
+    ("Despesas Administrativas e Ocupação", "group", "gray"),
+    ("Aluguel&IPTU", "detail", ""),
+    ("Seguro Imóvel", "detail", ""),
+    ("Agua/Luz/Fone/Net", "detail", ""),
+    ("Combustível", "detail", ""),
+    ("Manutenção em Geral", "detail", ""),
+    ("Manutenção Veículos/Motos", "detail", ""),
+    ("Mat. de Escritório/Informática", "detail", ""),
+    ("Mat. De Limpeza", "detail", ""),
+    ("Viagens", "detail", ""),
+    ("Contábil (Terceiros)", "detail", ""),
+    ("Sistemas (Terceiros)", "detail", ""),
+    ("Juridico (Terceiros)", "detail", ""),
+    ("Assessorias/Consultorias/Treinamentos", "detail", ""),
+    ("Taxas, Licenças e Contrib.", "detail", ""),
+    ("Outros (Terceiros)", "detail", ""),
+    ("Outros (Despesas)", "detail", ""),
+    ("Quebra de caixa", "detail", ""),
+    ("Despesas com Vendas e Marketing", "group", "gray"),
+    ("Marketing/Publicidade", "detail", ""),
+    ("Sistema Fidelidade", "detail", ""),
+    ("Frete", "detail", ""),
+    ("Associação de Classe (Royalties)", "detail", ""),
+    ("7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO (EBITDA/LAJIDA)", "result", "yellow"),
+    ("8. (+/-) RESULTADO FINANCEIRO LÍQUIDO", "total", "blue"),
+    ("Juros Boletos", "detail", ""),
+    ("Tarifas Bancarias", "detail", ""),
+    ("Taxas de Cartão (MDR)", "detail", ""),
+    ("9. (=) RESULTADO ANTES DOS TRIBUTOS (LAIR)", "result", "yellow"),
+    ("10. (-) TRIBUTOS SOBRE O LUCRO", "total", "blue"),
+    ("IRPJ/CSLL", "detail", ""),
+    ("11. (=) LUCRO LÍQUIDO DO EXERCÍCIO", "result", "yellow"),
+]
 
-    # VENDAS
-    if not vendas.empty:
-        col_total = localizar_coluna(vendas, ["Total", "Valor", "Valor Total", "Receita", "Venda"])
-        vendas["Mês"] = detectar_mes(vendas)
-        vendas["Valor Receita"] = vendas[col_total].apply(limpar_valor) if col_total else 0.0
-    else:
-        vendas = pd.DataFrame(columns=["Mês", "Valor Receita"])
+PESSOAL = ["Alimentação","Pagamento de Férias","FGTS","Salários Fixos + Horas Extras","Comissões e Premiações","INSS","IRRF Folha","Cursos, Treinamentos, Viagens","PPRA<PCMSO e Exames","Rescisão (guia)","Provisão 13 e Férias","Uniformes","Vale Transporte","Pro-Labore","Outras Despesas com Pessoal"]
+ADMIN = ["Aluguel&IPTU","Seguro Imóvel","Agua/Luz/Fone/Net","Combustível","Manutenção em Geral","Manutenção Veículos/Motos","Mat. de Escritório/Informática","Mat. De Limpeza","Viagens","Contábil (Terceiros)","Sistemas (Terceiros)","Juridico (Terceiros)","Assessorias/Consultorias/Treinamentos","Taxas, Licenças e Contrib.","Outros (Terceiros)","Outros (Despesas)","Quebra de caixa"]
+VENDAS_MKT = ["Marketing/Publicidade","Sistema Fidelidade","Frete","Associação de Classe (Royalties)"]
+DEDUCOES = ["ICMS","DAS","ISSQN"]
+FINANCEIRO = ["Juros Boletos","Tarifas Bancarias","Taxas de Cartão (MDR)"]
+TRIBUTOS = ["IRPJ/CSLL"]
 
-    # CONTAS
+def infer_month_from_file(filename):
+    s = norm_txt(filename)
+    for k, v in MONTH_MAP.items():
+        if k in s:
+            return f"{k[:3]}/26"
+    return None
+
+def infer_month_from_df(df):
+    col = find_col(df, ["Mês", "Mes", "Ano-mês", "Ano Mes", "Data", "Data Emissão", "Data Pagamento"])
+    if col:
+        # tenta pegar a moda
+        vals = df[col].dropna()
+        if len(vals):
+            v = vals.iloc[0]
+            if isinstance(v, (pd.Timestamp, datetime)):
+                return v.strftime("%b/%y").lower().replace(".", "")
+            dt = pd.to_datetime(v, errors="coerce", dayfirst=True)
+            if pd.notna(dt):
+                return dt.strftime("%b/%y").lower().replace(".", "")
+            s = str(v).strip().lower()
+            if "/" in s or "-" in s or any(m in norm_txt(s) for m in MONTH_MAP):
+                # normaliza jan/26
+                ano, mes = month_key(s)
+                if mes != 99 and ano != 9999:
+                    rev = {1:"jan",2:"fev",3:"mar",4:"abr",5:"mai",6:"jun",7:"jul",8:"ago",9:"set",10:"out",11:"nov",12:"dez"}
+                    return f"{rev[mes]}/{str(ano)[-2:]}"
+    return None
+
+def load_from_folders():
+    venda = read_all_excels(BASE_DIR / "VENDA POR PAGAMENTO")
+    contas = read_all_excels(BASE_DIR / "CONTAS A PAGAR - DRE")
+    plano = read_all_excels(BASE_DIR / "PLANO DE CONTAS - LEGENDA")
+    # Receita
+    receita_by_month = {}
+    if not venda.empty:
+        col_total = find_col(venda, ["Total", "Valor", "Valor Total", "Valor Venda"])
+        col_mes = find_col(venda, ["Ano-mês", "Ano Mes", "Mês", "Mes", "Data"])
+        if col_total:
+            venda["_VALOR"] = venda[col_total].apply(money_to_float)
+            if col_mes:
+                venda["_MES"] = venda[col_mes].apply(lambda x: infer_month_from_df(pd.DataFrame({col_mes:[x]})) or str(x))
+            else:
+                venda["_MES"] = venda["ARQUIVO_ORIGEM"].apply(infer_month_from_file).fillna("sem_mes")
+            receita_by_month = venda.groupby("_MES")["_VALOR"].sum().to_dict()
+
+    # Despesas por classificação e mês
+    nao = pd.DataFrame()
+    class_month = {}
     if not contas.empty:
-        col_valor = localizar_coluna(contas, ["Valor Documento", "Valor", "Total", "Valor Total"])
-        col_plano = localizar_coluna(contas, ["Plano de Contas", "Plano Contas", "Conta", "Classificação"])
-        col_loja = localizar_coluna(contas, ["Unidade", "Loja", "Apelido Un. Neg.", "Un. Neg."])
-        contas["Mês"] = detectar_mes(contas)
-        contas["Valor Documento"] = contas[col_valor].apply(limpar_valor) if col_valor else 0.0
-        contas["Plano de Contas"] = contas[col_plano].astype(str) if col_plano else ""
-        contas["Loja"] = contas[col_loja].astype(str) if col_loja else "Todas"
-        contas["Linha Classificada"] = contas["Plano de Contas"].apply(classificar_plano)
-        contas_class = contas[contas["Linha Classificada"] != "NAO_CLASSIFICADO"].copy()
-        nao_class = contas[contas["Linha Classificada"] == "NAO_CLASSIFICADO"].copy()
-    else:
-        contas = pd.DataFrame(columns=["Mês", "Valor Documento", "Plano de Contas", "Loja", "Linha Classificada"])
-        contas_class = contas.copy()
-        nao_class = contas.copy()
+        c_valor = find_col(contas, ["Valor Documento", "Valor", "Valor Total", "Total"])
+        c_plano = find_col(contas, ["Plano de Contas", "Plano Contas", "Conta", "Descrição", "Historico"])
+        c_mes = find_col(contas, ["Data Emissão", "Data Pagamento", "Mês", "Mes", "Data"])
+        contas["_VALOR"] = contas[c_valor].apply(money_to_float) if c_valor else 0
+        contas["_TEXTO"] = contas[c_plano].astype(str) if c_plano else ""
+        contas["_CLASS"] = contas["_TEXTO"].apply(classify_by_text)
+        if c_mes:
+            contas["_MES"] = contas[c_mes].apply(lambda x: infer_month_from_df(pd.DataFrame({c_mes:[x]})) or str(x))
+        else:
+            contas["_MES"] = contas["ARQUIVO_ORIGEM"].apply(infer_month_from_file).fillna("sem_mes")
+        nao = contas[contas["_CLASS"] == "NAO_CLASSIFICADO"].copy()
+        class_month = contas[contas["_CLASS"] != "NAO_CLASSIFICADO"].groupby(["_CLASS","_MES"])["_VALOR"].sum().to_dict()
 
-    # ESTOQUE
-    if not estoque.empty:
-        estoque["Mês"] = detectar_mes(estoque)
-        col_est = localizar_coluna(estoque, ["Estoque X Custo Médio", "Estoque X Custo Medio", "Valor Estoque", "Estoque a Custo"])
-        estoque["Valor Estoque"] = estoque[col_est].apply(limpar_valor) if col_est else 0.0
-    else:
-        estoque = pd.DataFrame(columns=["Mês", "Valor Estoque"])
-
-    meses = meses_fechados(list(vendas["Mês"].dropna().unique()) + list(contas["Mês"].dropna().unique()) + list(estoque["Mês"].dropna().unique()))
-
-    def receita(m): return vendas.loc[vendas["Mês"] == m, "Valor Receita"].sum()
-    def soma_linha(m, linha): return contas_class.loc[(contas_class["Mês"] == m) & (contas_class["Linha Classificada"] == linha), "Valor Documento"].sum()
-    def soma_lista(m, linhas): return sum(soma_linha(m, l) for l in linhas)
-
-    pessoal = ["Alimentação", "Pagamento de Férias", "FGTS", "Salários Fixos + Horas Extras", "Comissões e premiações", "INSS", "IRRF Folha", "Cursos, Treinamentos, Viagens", "PPRA<PCMSO e Exames", "Rescisão (guia)", "Provisão 13 e Férias", "Uniformes", "Vale Transporte", "Pro-Labore", "Outras Despesas com Pessoal"]
-    admin = ["Aluguel&IPTU", "Seguro Imóvel", "Agua/Luz/Fone/Net", "Combustível", "Manutenção em Geral", "Manutenção Veículos/Motos", "Mat. de Escritório/Informática", "Mat. De Limpeza", "Viagens", "Contábil (Terceiros)", "Sistemas (Terceiros)", "Juridico (Terceiros)", "Assessorias/Consultorias/Treinamentos", "Taxas, Licenças e Contrib.", "Outros (Terceiros)", "Outros (Despesas)", "Quebra de caixa"]
-    vendas_mkt = ["Marketing/Publicidade", "Sistema Fidelidade", "Frete", "Associação de Classe (Royalties)"]
-    financeiro = ["Juros Boletos", "Tarifas Bancarias", "Taxas de Cartão (MDR)"]
-
-    linhas_modelo = [
-        ("1. RECEITA OPERACIONAL BRUTA", "bloco", lambda m: receita(m)),
-        ("Receita de Vendas de Mercadorias", "item", lambda m: receita(m)),
-        ("2. (-) DEDUÇÕES DA RECEITA BRUTA", "bloco", lambda m: soma_lista(m, ["ICMS", "DAS", "ISSQN"])),
-        ("ICMS", "item", lambda m: soma_linha(m, "ICMS")),
-        ("DAS", "item", lambda m: soma_linha(m, "DAS")),
-        ("ISSQN", "item", lambda m: soma_linha(m, "ISSQN")),
-        ("3. (=) RECEITA OPERACIONAL LÍQUIDA", "resultado", lambda m: receita(m) - soma_lista(m, ["ICMS", "DAS", "ISSQN"])),
-        ("4. (-) CUSTOS DAS VENDAS", "bloco", lambda m: soma_linha(m, "Mercadorias (CMP)")),
-        ("Mercadorias (CMP)", "item", lambda m: soma_linha(m, "Mercadorias (CMP)")),
-        ("5. (=) LUCRO BRUTO", "resultado", lambda m: (receita(m) - soma_lista(m, ["ICMS", "DAS", "ISSQN"])) - soma_linha(m, "Mercadorias (CMP)")),
-        ("6. (-) DESPESAS OPERACIONAIS", "bloco", lambda m: soma_lista(m, pessoal + admin + vendas_mkt)),
-        ("Despesas com Pessoal", "grupo", lambda m: soma_lista(m, pessoal)),
-    ]
-    linhas_modelo += [(x, "item", lambda m, x=x: soma_linha(m, x)) for x in pessoal]
-    linhas_modelo += [("Despesas Administrativas e Ocupação", "grupo", lambda m: soma_lista(m, admin))]
-    linhas_modelo += [(x, "item", lambda m, x=x: soma_linha(m, x)) for x in admin]
-    linhas_modelo += [("Despesas com Vendas e Marketing", "grupo", lambda m: soma_lista(m, vendas_mkt))]
-    linhas_modelo += [(x, "item", lambda m, x=x: soma_linha(m, x)) for x in vendas_mkt]
-    linhas_modelo += [
-        ("7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO (EBITDA/LAJIDA)", "resultado", lambda m: ((receita(m) - soma_lista(m, ["ICMS", "DAS", "ISSQN"])) - soma_linha(m, "Mercadorias (CMP)")) - soma_lista(m, pessoal + admin + vendas_mkt)),
-        ("8. (+/-) RESULTADO FINANCEIRO LÍQUIDO", "bloco", lambda m: soma_lista(m, financeiro)),
-    ]
-    linhas_modelo += [(x, "item", lambda m, x=x: soma_linha(m, x)) for x in financeiro]
-    linhas_modelo += [
-        ("9. (=) RESULTADO ANTES DOS TRIBUTOS (LAIR)", "resultado", lambda m: (((receita(m) - soma_lista(m, ["ICMS", "DAS", "ISSQN"])) - soma_linha(m, "Mercadorias (CMP)")) - soma_lista(m, pessoal + admin + vendas_mkt)) - soma_lista(m, financeiro)),
-        ("10. (-) TRIBUTOS SOBRE O LUCRO", "bloco", lambda m: soma_linha(m, "IRPJ/CSLL")),
-        ("IRPJ/CSLL", "item", lambda m: soma_linha(m, "IRPJ/CSLL")),
-        ("11. (=) LUCRO LÍQUIDO DO EXERCÍCIO", "resultado", lambda m: ((((receita(m) - soma_lista(m, ["ICMS", "DAS", "ISSQN"])) - soma_linha(m, "Mercadorias (CMP)")) - soma_lista(m, pessoal + admin + vendas_mkt)) - soma_lista(m, financeiro)) - soma_linha(m, "IRPJ/CSLL")),
-    ]
+    months = sorted(set(receita_by_month.keys()) | {m for _,m in class_month.keys()}, key=month_key)
+    months = [m for m in months if m and m != "sem_mes"]
+    if not months:
+        return pd.DataFrame(), nao
 
     rows = []
-    for linha, estilo, func in linhas_modelo:
-        row = {"Linha DRE": linha, "Estilo": estilo}
-        for m in meses:
-            val = float(func(m))
-            rec = receita(m)
-            row[f"{m} Valor"] = val
-            row[f"{m} %"] = (val / rec) if rec else 0.0
+    for line, kind, style in STRUCTURE:
+        row = {"Linha DRE": line, "_kind": kind, "_style": style}
+        for m in months:
+            receita = receita_by_month.get(m, 0)
+            def val(name): return class_month.get((name,m), 0)
+            if line == "1. RECEITA OPERACIONAL BRUTA":
+                v = receita
+            elif line == "Receita de Vendas de Mercadorias":
+                v = receita
+            elif line == "2. (-) DEDUÇÕES DA RECEITA BRUTA":
+                v = sum(val(x) for x in DEDUCOES)
+            elif line == "3. (=) RECEITA OPERACIONAL LÍQUIDA":
+                v = receita - sum(val(x) for x in DEDUCOES)
+            elif line == "4. (-) CUSTOS DAS VENDAS":
+                v = val("Mercadorias (CMP)")
+            elif line == "5. (=) LUCRO BRUTO":
+                v = receita - sum(val(x) for x in DEDUCOES) - val("Mercadorias (CMP)")
+            elif line == "6. (-) DESPESAS OPERACIONAIS":
+                v = sum(val(x) for x in PESSOAL + ADMIN + VENDAS_MKT)
+            elif line == "Despesas com Pessoal":
+                v = sum(val(x) for x in PESSOAL)
+            elif line == "Despesas Administrativas e Ocupação":
+                v = sum(val(x) for x in ADMIN)
+            elif line == "Despesas com Vendas e Marketing":
+                v = sum(val(x) for x in VENDAS_MKT)
+            elif line == "7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO (EBITDA/LAJIDA)":
+                v = receita - sum(val(x) for x in DEDUCOES) - val("Mercadorias (CMP)") - sum(val(x) for x in PESSOAL + ADMIN + VENDAS_MKT)
+            elif line == "8. (+/-) RESULTADO FINANCEIRO LÍQUIDO":
+                v = sum(val(x) for x in FINANCEIRO)
+            elif line == "9. (=) RESULTADO ANTES DOS TRIBUTOS (LAIR)":
+                v = receita - sum(val(x) for x in DEDUCOES) - val("Mercadorias (CMP)") - sum(val(x) for x in PESSOAL + ADMIN + VENDAS_MKT) - sum(val(x) for x in FINANCEIRO)
+            elif line == "10. (-) TRIBUTOS SOBRE O LUCRO":
+                v = sum(val(x) for x in TRIBUTOS)
+            elif line == "11. (=) LUCRO LÍQUIDO DO EXERCÍCIO":
+                v = receita - sum(val(x) for x in DEDUCOES) - val("Mercadorias (CMP)") - sum(val(x) for x in PESSOAL + ADMIN + VENDAS_MKT) - sum(val(x) for x in FINANCEIRO) - sum(val(x) for x in TRIBUTOS)
+            else:
+                v = val(line)
+            row[f"{m} Valor"] = fmt_brl(v)
+            row[f"{m} %"] = fmt_pct(v / receita if receita else 0)
         rows.append(row)
-    dre = pd.DataFrame(rows)
+    return pd.DataFrame(rows), nao
 
-    # Série executiva
-    long_rows = []
-    for m in meses:
-        rec = receita(m)
-        ded = soma_lista(m, ["ICMS", "DAS", "ISSQN"])
-        cmv = soma_linha(m, "Mercadorias (CMP)")
-        lucro_bruto = rec - ded - cmv
-        despesas = soma_lista(m, pessoal + admin + vendas_mkt)
-        ebitda = lucro_bruto - despesas
-        fin = soma_lista(m, financeiro)
-        ir = soma_linha(m, "IRPJ/CSLL")
-        lucro_liq = ebitda - fin - ir
-        long_rows.extend([
-            {"Mês": m, "Indicador": "Receita Bruta", "Valor": rec},
-            {"Mês": m, "Indicador": "Lucro Bruto", "Valor": lucro_bruto},
-            {"Mês": m, "Indicador": "EBITDA", "Valor": ebitda},
-            {"Mês": m, "Indicador": "Lucro Líquido", "Valor": lucro_liq},
-        ])
-    indicadores = pd.DataFrame(long_rows)
+def get_raw_value(dre, line, month):
+    col = f"{month} Valor"
+    if col not in dre.columns:
+        return 0.0
+    s = dre.loc[dre["Linha DRE"].astype(str).str.contains(line, case=False, regex=False), col]
+    if s.empty:
+        return 0.0
+    return money_to_float(s.iloc[0])
 
-    return {
-        "dre": dre,
-        "indicadores": indicadores,
-        "contas": contas,
-        "contas_classificadas": contas_class,
-        "nao_classificados": nao_class,
-        "vendas": vendas,
-        "estoque": estoque,
-        "plano": plano_legenda,
-        "meses": pd.DataFrame({"Mês": meses}),
-    }
+def style_dre(df):
+    def row_style(row):
+        style = row.get("_style", "")
+        if style == "yellow":
+            return ["background-color:#FFD11A;color:#06111F;font-weight:900;" for _ in row]
+        if style == "blue":
+            return ["background-color:#D6E8FB;color:#06111F;font-weight:900;" for _ in row]
+        if style == "gray":
+            return ["background-color:#2A3342;color:#FFFFFF;font-weight:800;font-style:italic;" for _ in row]
+        return ["background-color:#0B1628;color:#F5F7FA;" for _ in row]
+    show = df.drop(columns=[c for c in ["_kind","_style"] if c in df.columns])
+    return show.style.apply(lambda r: row_style(df.loc[r.name]), axis=1)
 
-# =========================
-# HTML TABLE
-# =========================
-def render_dre_table(df: pd.DataFrame, meses: List[str]) -> str:
-    cols = ["Linha DRE"]
-    for m in meses:
-        cols += [f"{m} Valor", f"{m} %"]
-    html = '<div class="dre-wrap"><table class="dre"><thead><tr>'
-    for c in cols:
-        html += f"<th>{c}</th>"
-    html += "</tr></thead><tbody>"
-    for _, r in df.iterrows():
-        estilo = r.get("Estilo", "item")
-        html += f'<tr class="{estilo}">'
-        html += f"<td>{r['Linha DRE']}</td>"
-        for m in meses:
-            html += f"<td class='num'>{fmt_brl(r.get(f'{m} Valor', 0))}</td>"
-            html += f"<td class='num'>{fmt_pct(r.get(f'{m} %', 0))}</td>"
-        html += "</tr>"
-    html += "</tbody></table></div>"
-    return html
+# CSS
+st.markdown("""
+<style>
+.stApp {background: #06111F; color: #F8FAFC;}
+[data-testid="stSidebar"] {background: #050B13;}
+h1, h2, h3 {color: #FFFFFF;}
+.card {
+    background: linear-gradient(135deg, #0B1628, #101E34);
+    border: 1px solid #1E3A5F;
+    border-radius: 18px;
+    padding: 22px;
+    box-shadow: 0 12px 30px rgba(0,0,0,.30);
+}
+.metric-label {color:#9FB3C8;font-size:14px;font-weight:700;}
+.metric-value {color:#FFFFFF;font-size:30px;font-weight:900;margin-top:6px;}
+.metric-sub {color:#00AEEF;font-size:13px;margin-top:6px;}
+</style>
+""", unsafe_allow_html=True)
 
-# =========================
-# APP
-# =========================
-def logo_html() -> str:
-    for p in [PASTA_BASE / "assets" / "logo_eirox.png", PASTA_BASE / "assets" / "logo eirox(3).png", PASTA_BASE / "logo_eirox.png"]:
-        if p.exists():
-            data = base64.b64encode(p.read_bytes()).decode()
-            return f'<img src="data:image/png;base64,{data}" style="height:44px; object-fit:contain;">'
-    return "<b style='color:#38bdf8;font-size:28px'>EIROX</b>"
+logo = get_logo()
+if logo:
+    st.markdown(f"""
+    <div style="display:flex;align-items:center;gap:22px;justify-content:center;margin-top:14px;">
+        <img src="data:image/png;base64,{logo}" style="height:42px;">
+        <h1 style="font-size:58px;margin:0;">DRE Empresa Online</h1>
+    </div>
+    """, unsafe_allow_html=True)
+else:
+    st.markdown("<h1 style='text-align:center;font-size:58px;'>DRE Empresa Online</h1>", unsafe_allow_html=True)
+
+st.markdown("<p style='text-align:center;color:#7DC8FF;font-size:20px;'>Dashboard financeiro gerencial no padrão Eirox Pricing Online • Atualização automática pelas pastas de base</p>", unsafe_allow_html=True)
 
 with st.sidebar:
     st.markdown("### ⚙️ Atualização")
@@ -462,77 +453,61 @@ with st.sidebar:
 
     st.divider()
     st.markdown("### 📁 Pastas monitoradas")
-    st.caption(str(PASTA_BASE))
-    for pasta in PASTAS_OBRIGATORIAS:
-        ok = (PASTA_BASE / pasta).exists()
-        st.markdown(("✅" if ok else "❌") + f" {pasta}")
+    st.caption(str(BASE_DIR))
+    for f in REQUIRED_FOLDERS:
+        st.markdown(("✅ " if (BASE_DIR / f).exists() else "❌ ") + f)
 
-resultado = processar_dre(datetime.now().timestamp())
-meses = resultado["meses"]["Mês"].tolist()
+    st.divider()
+    st.caption(f"Modo de leitura: {BASE_MODE}")
 
-st.markdown(
-    f"""
-    <div style="display:flex; align-items:center; justify-content:center; gap:28px; margin-top:10px;">
-        {logo_html()}
-        <div style="font-size:52px; font-weight:950; color:#f8fafc;">DRE Empresa Online</div>
-    </div>
-    <div class="subtitulo">Dashboard financeiro gerencial no padrão Eirox Pricing Online • Atualização automática pelas pastas de base</div>
-    """,
-    unsafe_allow_html=True,
-)
+try:
+    if BASE_MODE == "pastas":
+        dre, nao = load_from_folders()
+    else:
+        dre, nao = load_from_consolidated()
 
-if not meses:
-    st.error("Nenhum mês foi identificado nas bases. Verifique se as pastas de dados estão na mesma pasta do app ou em C:\\Users\\Comercial\\Desktop\\Dre.")
-    st.stop()
+    if dre.empty:
+        st.error("Nenhum mês foi identificado nas bases. Confirme que o app.py está em C:\\Users\\Comercial\\Desktop\\Dre ou que as pastas estão no mesmo repositório do Streamlit Cloud.")
+        st.stop()
 
-# Filtro sempre inicia com meses fechados
-meses_sel = st.sidebar.multiselect("Meses", options=meses, default=meses)
-if not meses_sel:
-    st.warning("Selecione pelo menos um mês.")
-    st.stop()
+    all_months = []
+    for c in dre.columns:
+        if str(c).endswith(" Valor"):
+            all_months.append(str(c).replace(" Valor", ""))
+    all_months = sorted(set(all_months), key=month_key)
+    default_months = closed_months(all_months)
 
-# KPIs último mês selecionado
-ultimo = sorted(meses_sel, key=mes_ordem)[-1]
-dre = resultado["dre"]
+    selected_months = st.sidebar.multiselect("Meses", all_months, default=default_months)
 
-def valor_linha(nome: str, mes: str) -> float:
-    s = dre.loc[dre["Linha DRE"].eq(nome), f"{mes} Valor"]
-    return float(s.iloc[0]) if len(s) else 0.0
+    keep = ["Linha DRE", "_kind", "_style"]
+    for m in selected_months:
+        keep += [f"{m} Valor", f"{m} %"]
+    dre_view = dre[[c for c in keep if c in dre.columns]].copy()
 
-def pct_linha(nome: str, mes: str) -> float:
-    s = dre.loc[dre["Linha DRE"].eq(nome), f"{mes} %"]
-    return float(s.iloc[0]) if len(s) else 0.0
+    ultimo = selected_months[-1] if selected_months else all_months[-1]
+    rec = get_raw_value(dre, "1. RECEITA OPERACIONAL BRUTA", ultimo)
+    lb = get_raw_value(dre, "5. (=) LUCRO BRUTO", ultimo)
+    ebitda = get_raw_value(dre, "7. (=) RESULTADO", ultimo)
+    lucro = get_raw_value(dre, "11. (=) LUCRO LÍQUIDO", ultimo)
 
-st.markdown("## 📊 Painel Executivo")
-kp1, kp2, kp3, kp4 = st.columns(4)
-for col, titulo, linha in [
-    (kp1, "Receita Bruta", "1. RECEITA OPERACIONAL BRUTA"),
-    (kp2, "Lucro Bruto", "5. (=) LUCRO BRUTO"),
-    (kp3, "EBITDA", "7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO (EBITDA/LAJIDA)"),
-    (kp4, "Lucro Líquido", "11. (=) LUCRO LÍQUIDO DO EXERCÍCIO"),
-]:
-    with col:
-        st.markdown(f"<div class='card'><div class='kpi-title'>{titulo} • {ultimo}</div><div class='kpi-value'>{fmt_brl(valor_linha(linha, ultimo))}</div><div class='kpi-sub'>{fmt_pct(pct_linha(linha, ultimo))} da receita</div></div>", unsafe_allow_html=True)
+    c1,c2,c3,c4 = st.columns(4)
+    for col, label, val, sub in [
+        (c1, "Receita Bruta", rec, ultimo),
+        (c2, "Lucro Bruto", lb, fmt_pct(lb/rec if rec else 0)),
+        (c3, "EBITDA", ebitda, fmt_pct(ebitda/rec if rec else 0)),
+        (c4, "Lucro Líquido", lucro, fmt_pct(lucro/rec if rec else 0)),
+    ]:
+        with col:
+            st.markdown(f"<div class='card'><div class='metric-label'>{label}</div><div class='metric-value'>{fmt_brl(val)}</div><div class='metric-sub'>{sub}</div></div>", unsafe_allow_html=True)
 
-st.markdown("## DRE Gerencial")
-st.caption("Modelo mantido no formato da aba DRE original: meses em colunas, valores e percentuais lado a lado. Não classificados ficam fora dos cálculos principais.")
-dre_filtrado_cols = ["Linha DRE", "Estilo"] + [c for m in meses_sel for c in [f"{m} Valor", f"{m} %"]]
-st.markdown(render_dre_table(dre[dre_filtrado_cols], meses_sel), unsafe_allow_html=True)
+    st.markdown("## DRE Gerencial")
+    st.caption("Modelo mantido no formato aprovado: meses em colunas, valores e percentuais lado a lado, com todos os blocos estruturais destacados.")
+    st.dataframe(style_dre(dre_view), use_container_width=True, height=620)
 
-st.markdown("## 📈 Evolução Mensal")
-ind = resultado["indicadores"]
-ind = ind[ind["Mês"].isin(meses_sel)].copy()
-if not ind.empty:
-    fig = px.line(ind, x="Mês", y="Valor", color="Indicador", markers=True)
-    fig.update_layout(template="plotly_dark", paper_bgcolor="#07111f", plot_bgcolor="#07111f", font_color="#e5e7eb")
-    st.plotly_chart(fig, use_container_width=True)
+    with st.expander("⚠️ Auditoria de não classificados", expanded=False):
+        st.metric("Linhas não classificadas", len(nao))
+        if not nao.empty:
+            st.dataframe(nao, use_container_width=True, height=360)
 
-with st.expander("⚠️ Auditoria DRE - Não classificados", expanded=False):
-    nc = resultado["nao_classificados"]
-    valor_nc = nc["Valor Documento"].sum() if "Valor Documento" in nc.columns else 0
-    st.markdown(f"**Registros não classificados:** {len(nc)}  |  **Valor:** {fmt_brl(valor_nc)}")
-    if not nc.empty:
-        mostrar = [c for c in ["Mês", "Loja", "Plano de Contas", "Valor Documento", "Arquivo Origem"] if c in nc.columns]
-        st.dataframe(nc[mostrar], use_container_width=True, hide_index=True)
-
-st.markdown("<div class='footer-note'>Eirox DRE Online • Base atualizada diretamente das pastas monitoradas.</div>", unsafe_allow_html=True)
+except Exception as e:
+    st.exception(e)
