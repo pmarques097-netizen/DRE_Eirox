@@ -122,6 +122,10 @@ table.eirox-table tr.resultado_amarelo td{background:#ffd21f!important; color:#0
 table.eirox-table tr.resultado_amarelo td:first-child{background:#ffd21f!important; color:#030914!important;}
 table.eirox-table tr.agrupador td{background:#1b2534!important; color:#fff!important; font-weight:900; font-style:italic;}
 table.eirox-table tr.agrupador td:first-child{background:#1b2534!important;}
+/* Reforço visual final dos tópicos do DRE */
+table.eirox-table tr.subtotal_azul td{box-shadow: inset 5px 0 0 #00a8ff;}
+table.eirox-table tr.resultado_amarelo td{box-shadow: inset 5px 0 0 #ff9f1c; font-size:.96rem;}
+table.eirox-table tr.agrupador td{box-shadow: inset 5px 0 0 #64748b;}
 .audit-box{background:rgba(255,84,112,.12); border:1px solid rgba(255,84,112,.35); padding:16px 18px; border-radius:18px; color:#ffb5c1; font-weight:800;}
 .ok-box{background:rgba(50,232,117,.12); border:1px solid rgba(50,232,117,.35); padding:16px 18px; border-radius:18px; color:#baf7cb; font-weight:800;}
 .footer{color:#6d7d90; font-size:.78rem; text-align:center; margin-top:30px; padding-top:18px; border-top:1px solid rgba(255,255,255,.08);}
@@ -330,6 +334,79 @@ def make_kpi(label: str, value: str, delta_value: float | None = None, delta_lab
     )
 
 
+
+def classificar_destaque_linha(linha: str, tipo_original: str = "") -> str:
+    """Classifica visualmente a linha do DRE sem alterar cálculo.
+    Mantém o Tipo vindo da base, mas reforça os tópicos principais.
+    """
+    txt = str(linha).upper().strip()
+    tipo_original = str(tipo_original).strip()
+
+    resultados_amarelos = [
+        "3. (=) RECEITA OPERACIONAL LÍQUIDA",
+        "3. (=) RECEITA OPERACIONAL LIQUIDA",
+        "5. (=) LUCRO BRUTO",
+        "7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO",
+        "EBITDA",
+        "LAJIDA",
+        "9. (=) RESULTADO ANTES DOS TRIBUTOS",
+        "LAIR",
+        "11. (=) LUCRO LÍQUIDO",
+        "11. (=) LUCRO LIQUIDO",
+        "POSIÇÃO FINAL",
+        "POSICAO FINAL",
+        "MARGEM DE CONTRIBUIÇÃO TOTAL",
+        "MARGEM DE CONTRIBUICAO TOTAL",
+        "MARGEM DE CONTRIBUIÇÃO PERCENTUAL",
+        "MARGEM DE CONTRIBUICAO PERCENTUAL",
+        "PONTO DE EQUILÍBRIO EM VALOR MONETÁRIO",
+        "PONTO DE EQUILIBRIO EM VALOR MONETARIO",
+    ]
+    subtotais_azuis = [
+        "1. RECEITA OPERACIONAL BRUTA",
+        "2. (-) DEDUÇÕES DA RECEITA BRUTA",
+        "2. (-) DEDUCOES DA RECEITA BRUTA",
+        "4. (-) CUSTOS DAS VENDAS",
+        "6. (-) DESPESAS OPERACIONAIS",
+        "8. (+/-) RESULTADO FINANCEIRO LÍQUIDO",
+        "8. (+/-) RESULTADO FINANCEIRO LIQUIDO",
+        "10. (-) TRIBUTOS SOBRE O LUCRO",
+        "--- CONCILIAÇÃO DE FLUXO DE CAIXA",
+        "--- CONCILIACAO DE FLUXO DE CAIXA",
+        "RECEITAS",
+        "ESTOQUE A CUSTO",
+        "CMV",
+        "RECEITA TOTAL",
+        "DESPESAS FIXAS",
+        "DESPESAS VARIÁVEIS",
+        "DESPESAS VARIAVEIS",
+        "CUSTOS E DESPESAS FIXAS TOTAIS",
+        "CUSTO MÉDIO DE VENDA",
+        "CUSTO MEDIO DE VENDA",
+        "TOTAL DE CUSTOS VARIÁVEIS",
+        "TOTAL DE CUSTOS VARIAVEIS",
+    ]
+    agrupadores = [
+        "DESPESAS COM PESSOAL",
+        "DESPESAS ADMINISTRATIVAS E OCUPAÇÃO",
+        "DESPESAS ADMINISTRATIVAS E OCUPACAO",
+        "DESPESAS COM VENDAS E MARKETING",
+        "ANÁLISE DE PONTO DE EQUILÍBRIO",
+        "ANALISE DE PONTO DE EQUILIBRIO",
+        "CÁLCULOS INTERMEDIÁRIOS",
+        "CALCULOS INTERMEDIARIOS",
+    ]
+
+    if any(p in txt for p in resultados_amarelos):
+        return "resultado_amarelo"
+    if any(p in txt for p in subtotais_azuis):
+        return "subtotal_azul"
+    if any(p in txt for p in agrupadores):
+        return "agrupador"
+    if tipo_original in ["subtotal_azul", "resultado_amarelo", "agrupador"]:
+        return tipo_original
+    return "detalhe"
+
 def dre_pivot_html(dados: pd.DataFrame, meses: list[str], secao: str | None = None) -> str:
     base = dados.copy()
     if secao:
@@ -341,7 +418,7 @@ def dre_pivot_html(dados: pd.DataFrame, meses: list[str], secao: str | None = No
     header = "<tr><th>Linha DRE</th>" + "".join([f"<th>{m} Valor</th><th>{m} %</th>" for m in meses]) + "</tr>"
     for _, row in ordem.iterrows():
         linha = row["Linha DRE"]
-        tipo = row["Tipo"] if row["Tipo"] in ["subtotal_azul", "resultado_amarelo", "agrupador"] else "detalhe"
+        tipo = classificar_destaque_linha(linha, row.get("Tipo", "detalhe"))
         nivel = int(row.get("Nível", 0))
         indent = "&nbsp;" * (nivel * 4)
         tds = [f"<td>{indent}{linha}</td>"]
