@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
+VERSÃO CONGELADA - DRE EIROX ENTERPRISE PREMIUM v1.0
 Versão baseada na base congelada DRE_Consolidado_Moderno.xlsx.
 Fonte principal: aba DADOS_DRE.
 
@@ -62,9 +63,10 @@ MESES_ORDEM = {
 # Altere as senhas abaixo quando desejar.
 # Perfil "admin" pode acessar tudo; perfil "visualizacao" apenas visualiza o painel.
 USUARIOS = {
-    "admin": {"senha": "admin123", "perfil": "admin", "nome": "Administrador"},
-    "ubiratan": {"senha": "1234", "perfil": "visualizacao", "nome": "Ubiratan"},
-    "vanderlei": {"senha": "1234", "perfil": "visualizacao", "nome": "Vanderlei"},
+    "paulomarques": {"senha": "031730", "perfil": "admin", "nome": "Paulo Marques"},
+    "admin": {"senha": "031730", "perfil": "admin", "nome": "Administrador"},
+    "ubiratan": {"senha": "031730", "perfil": "visualizacao", "nome": "Ubiratan"},
+    "vanderlei": {"senha": "031730", "perfil": "visualizacao", "nome": "Vanderlei"},
 }
 
 
@@ -411,7 +413,7 @@ def tela_login() -> bool:
 
     st.markdown(
         """
-        <div class='user-chip'>Usuários padrão: admin / ubiratan / vanderlei</div>
+        <div class='user-chip'>Usuários autorizados: paulomarques / admin / ubiratan / vanderlei</div>
         """,
         unsafe_allow_html=True,
     )
