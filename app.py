@@ -55,6 +55,19 @@ MESES_ORDEM = {
     "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12,
 }
 
+
+# =========================================================
+# USUÁRIOS E SENHAS
+# =========================================================
+# Altere as senhas abaixo quando desejar.
+# Perfil "admin" pode acessar tudo; perfil "visualizacao" apenas visualiza o painel.
+USUARIOS = {
+    "admin": {"senha": "admin123", "perfil": "admin", "nome": "Administrador"},
+    "ubiratan": {"senha": "1234", "perfil": "visualizacao", "nome": "Ubiratan"},
+    "vanderlei": {"senha": "1234", "perfil": "visualizacao", "nome": "Vanderlei"},
+}
+
+
 # =========================================================
 # CSS PREMIUM
 # =========================================================
@@ -129,6 +142,11 @@ div[role="radiogroup"] label:hover{
 }
 div[role="radiogroup"] label[data-baseweb="radio"]{width:100%;}
 
+
+.login-card{max-width:460px; margin:8vh auto 0 auto; padding:34px 32px; border-radius:26px; background:linear-gradient(180deg,#10223a,#07111f); border:1px solid rgba(0,168,255,.32); box-shadow:0 18px 50px rgba(0,0,0,.35);}
+.login-title{text-align:center; font-size:2rem; font-weight:950; color:#fff; margin:12px 0 6px 0;}
+.login-sub{text-align:center; color:#8bd4ff; font-weight:700; margin-bottom:20px;}
+.user-chip{background:rgba(0,168,255,.12); border:1px solid rgba(0,168,255,.28); border-radius:14px; padding:10px 12px; margin:10px 0; color:#d9f2ff; font-weight:800; text-align:center;}
 </style>
 """,
     unsafe_allow_html=True,
@@ -349,6 +367,71 @@ def serie_linha(dados: pd.DataFrame, linha_contains: str, meses: list[str]) -> p
         rows.append({"Mês": m, "Valor": valor_linha(dados, linha_contains, m)})
     return pd.DataFrame(rows)
 
+
+# =========================================================
+# AUTENTICAÇÃO
+# =========================================================
+def tela_login() -> bool:
+    """Retorna True quando o usuário está autenticado."""
+    if st.session_state.get("autenticado", False):
+        return True
+
+    logo_path_login = encontrar_arquivo(POSSIVEIS_LOGOS)
+    logo_html = ""
+    if logo_path_login:
+        b64 = img_base64(logo_path_login)
+        logo_html = f"<div style='text-align:center;'><img src='data:image/png;base64,{b64}' width='190'></div>"
+
+    st.markdown(
+        f"""
+        <div class='login-card'>
+            {logo_html}
+            <div class='login-title'>Eirox DRE Online</div>
+            <div class='login-sub'>Acesso ao Painel Financeiro Enterprise</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.form("form_login", clear_on_submit=False):
+        usuario = st.text_input("Usuário")
+        senha = st.text_input("Senha", type="password")
+        entrar = st.form_submit_button("Entrar")
+
+    if entrar:
+        user = USUARIOS.get(str(usuario).strip().lower())
+        if user and senha == user["senha"]:
+            st.session_state["autenticado"] = True
+            st.session_state["usuario"] = str(usuario).strip().lower()
+            st.session_state["nome_usuario"] = user["nome"]
+            st.session_state["perfil"] = user["perfil"]
+            st.rerun()
+        else:
+            st.error("Usuário ou senha inválidos.")
+
+    st.markdown(
+        """
+        <div class='user-chip'>Usuários padrão: admin / ubiratan / vanderlei</div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.stop()
+
+
+def botao_logout_sidebar():
+    nome = st.session_state.get("nome_usuario", "Usuário")
+    perfil = st.session_state.get("perfil", "")
+    st.sidebar.markdown("<div class='sidebar-section'>Acesso</div>", unsafe_allow_html=True)
+    st.sidebar.caption(f"Usuário: {nome}")
+    st.sidebar.caption(f"Perfil: {perfil}")
+    if st.sidebar.button("Sair", use_container_width=True):
+        for k in ["autenticado", "usuario", "nome_usuario", "perfil"]:
+            st.session_state.pop(k, None)
+        st.rerun()
+
+
+tela_login()
+
 # =========================================================
 # CARREGAMENTO
 # =========================================================
@@ -364,6 +447,7 @@ else:
 
 st.sidebar.markdown("<div class='sidebar-title'>DRE Financeiro Online</div>", unsafe_allow_html=True)
 st.sidebar.markdown("<div class='sidebar-subtitle'>Enterprise Premium</div>", unsafe_allow_html=True)
+botao_logout_sidebar()
 
 st.sidebar.markdown("<div class='sidebar-section'>Navegação</div>", unsafe_allow_html=True)
 pagina = st.sidebar.radio(
