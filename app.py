@@ -553,8 +553,8 @@ if pagina == "📊 Painel CEO":
 
 elif pagina == "📑 DRE Gerencial":
     st.markdown("<div class='section-title'>📑 DRE Gerencial</div>", unsafe_allow_html=True)
-    st.markdown("<div class='section-caption'>Modelo mantido no formato aprovado: meses em colunas, valores e percentuais lado a lado, com destaques por tipo de linha.</div>", unsafe_allow_html=True)
-    st.markdown(dre_pivot_html(dados, meses_sel, secao="DRE"), unsafe_allow_html=True)
+    st.markdown("<div class='section-caption'>Modelo completo no formato aprovado: DRE, conciliação de fluxo de caixa, indicadores e ponto de equilíbrio ao final.</div>", unsafe_allow_html=True)
+    st.markdown(dre_pivot_html(dados, meses_sel, secao=None), unsafe_allow_html=True)
 
 elif pagina == "📈 Evolução Mensal":
     st.markdown("<div class='section-title'>📈 Evolução Mensal</div>", unsafe_allow_html=True)
