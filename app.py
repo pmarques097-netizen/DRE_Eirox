@@ -151,8 +151,36 @@ def is_current_month_label(m):
 
 
 def closed_months(months):
+    """Retorna somente meses fechados do ano atual.
+
+Regra: se hoje for jun/26, carrega apenas jan/26 a mai/26.
+Quando a base ainda não possui meses do ano atual, usa os meses fechados disponíveis
+como plano de contingência para não quebrar o painel.
+    """
+    hoje = datetime.today()
+    fechados_ano_atual = []
+    for m in months:
+        ano, mes = month_key(m)
+        if ano == hoje.year and mes < hoje.month:
+            fechados_ano_atual.append(m)
+
+    if fechados_ano_atual:
+        return fechados_ano_atual
+
+    # fallback: remove somente o mês atual, caso a base seja de outro ano
     fechados = [m for m in months if not is_current_month_label(m)]
     return fechados if fechados else months
+
+
+def filter_months_current_year_closed(months):
+    """Limita a lista exibida no filtro aos meses fechados do ano atual."""
+    hoje = datetime.today()
+    filtrados = []
+    for m in months:
+        ano, mes = month_key(m)
+        if ano == hoje.year and mes < hoje.month:
+            filtrados.append(m)
+    return filtrados if filtrados else closed_months(months)
 
 
 def find_project_base():
@@ -448,16 +476,36 @@ def delta_pct_atual_vs_anterior(dre, line, months):
     return fmt_pct((atual - ant) / abs(ant))
 
 
+def dre_row_class(line, current_style=""):
+    """Define destaque visual da linha do DRE.
+    - Amarelo: linhas de resultado/subtotal (=)
+    - Azul: blocos principais numerados
+    - Cinza: agrupadores operacionais
+    - Escuro: linhas analíticas
+    """
+    txt = norm_txt(line)
+    if "(=)" in txt or "LUCRO BRUTO" in txt or "LUCRO LIQUIDO" in txt or "EBITDA" in txt or "LAIR" in txt or "RECEITA OPERACIONAL LIQUIDA" in txt:
+        return "row-yellow"
+    if re.match(r"^\s*(1|2|4|6|8|10)\.", str(line)):
+        return "row-blue"
+    if txt in [norm_txt(x) for x in ["Despesas com Pessoal", "Despesas Administrativas e Ocupação", "Despesas com Vendas e Marketing"]]:
+        return "row-gray"
+    if current_style == "yellow":
+        return "row-yellow"
+    if current_style == "blue":
+        return "row-blue"
+    if current_style == "gray":
+        return "row-gray"
+    return "row-detail"
+
+
 def html_dre_table(df, months):
     rows_html = []
     header = "<tr><th class='col-linha'>Linha DRE</th>" + "".join([f"<th>{m} Valor</th><th>{m} %</th>" for m in months]) + "</tr>"
     for _, r in df.iterrows():
         style = r.get("_style", "")
-        cls = "row-detail"
-        if style == "yellow": cls = "row-yellow"
-        elif style == "blue": cls = "row-blue"
-        elif style == "gray": cls = "row-gray"
         line = str(r.get("Linha DRE", ""))
+        cls = dre_row_class(line, style)
         cells = [f"<td class='col-linha'>{line}</td>"]
         for m in months:
             v = float(r.get(f"{m} Valor", 0) or 0)
@@ -515,7 +563,10 @@ h1, h2, h3 {color: #FFFFFF;}
 .dre-scroll {overflow:auto; border:1px solid #17385A; border-radius:14px; max-height:680px;}
 .dre-table {border-collapse:collapse; width:max-content; min-width:100%; font-size:15px;}
 .dre-table th {position: sticky; top:0; background:#171B24; color:#B8C3D0; z-index:2; padding:12px 10px; border:1px solid #263447; text-align:right; font-weight:800;}
-.dre-table td {padding:11px 10px; border:1px solid #263447; text-align:right; white-space:nowrap;}
+.dre-table td {padding:11px 10px; border:1px solid #263447; text-align:right; white-space:nowrap; font-variant-numeric: tabular-nums;}
+.dre-table td:not(.col-linha) {font-weight:800;}
+.row-detail td:not(.col-linha) {color:#FFFFFF;}
+
 .dre-table .col-linha {position: sticky; left:0; z-index:1; text-align:left; min-width:360px; max-width:460px;}
 .dre-table th.col-linha {z-index:3;}
 .row-detail td {background:#0B1628; color:#F5F7FA;}
@@ -559,6 +610,7 @@ with st.sidebar:
     if (BASE_DIR / "data" / "DRE_Consolidado_Moderno.xlsx").exists() or (BASE_DIR / "DRE_Consolidado_Moderno.xlsx").exists():
         st.markdown("✅ DRE_Consolidado_Moderno.xlsx")
     st.caption(f"Modo de leitura: {BASE_MODE}")
+    st.caption("Filtro padrão: somente meses fechados do ano atual.")
 
 try:
     if BASE_MODE == "pastas":
@@ -572,14 +624,15 @@ try:
         st.error("Nenhuma base foi encontrada. Para rodar online, coloque DRE_Consolidado_Moderno.xlsx dentro da pasta data do repositório. Para rodar local, mantenha as 4 pastas de base junto do app.py.")
         st.stop()
 
-    all_months = sorted({str(c).replace(" Valor", "") for c in dre.columns if str(c).endswith(" Valor")}, key=month_key)
-    all_months = [m for m in all_months if month_key(m) != (9999, 99)]
+    all_months_raw = sorted({str(c).replace(" Valor", "") for c in dre.columns if str(c).endswith(" Valor")}, key=month_key)
+    all_months_raw = [m for m in all_months_raw if month_key(m) != (9999, 99)]
+    all_months = filter_months_current_year_closed(all_months_raw)
     if not all_months:
-        st.error("A base foi encontrada, mas não há colunas de mês no padrão 'jan/26 Valor'. Verifique a aba DRE do arquivo consolidado.")
+        st.error("A base foi encontrada, mas não há meses fechados do ano atual no padrão 'jan/26 Valor'.")
         st.stop()
 
-    default_months = closed_months(all_months)
-    selected_months = st.sidebar.multiselect("Meses", all_months, default=default_months)
+    default_months = all_months
+    selected_months = st.sidebar.multiselect("Meses fechados do ano", all_months, default=default_months)
     if not selected_months:
         selected_months = default_months
     ultimo = selected_months[-1]
