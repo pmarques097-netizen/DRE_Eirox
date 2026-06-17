@@ -1,22 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-Eirox DRE Online - versão com busca completa dos meses
-- Mantém o modelo DRE aprovado: meses em colunas, Valor e % lado a lado
-- Lê a base consolidada automaticamente de data/DRE_Consolidado_Moderno.xlsx ou da raiz do projeto
-- Filtra por padrão somente os meses fechados do ano atual
-- Não limita mais aos últimos 3 meses
-- Formata valores em moeda brasileira
+Eirox DRE Empresa Online - versão profissional
+- Lê automaticamente o arquivo data/DRE_Consolidado_Moderno.xlsx ou DRE_Consolidado_Moderno.xlsx
+- Mantém o formato da aba DRE: meses em colunas e Valor/% lado a lado
+- Filtra por padrão somente meses fechados do ano atual
+- Destaques visuais para todos os tópicos do DRE e resultados estratégicos
+- Formatação em moeda brasileira e percentual brasileiro
 """
 
-from pathlib import Path
-from datetime import date
-import re
+from __future__ import annotations
+
 import base64
+import re
+from pathlib import Path
+from datetime import datetime
+from typing import Dict, List, Tuple, Optional
+
+import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.graph_objects as go
 
 # =========================
-# CONFIGURAÇÃO DA PÁGINA
+# CONFIGURAÇÃO GERAL
 # =========================
 st.set_page_config(
     page_title="Eirox DRE Online",
@@ -25,440 +31,517 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# =========================
-# ESTILO DARK ENTERPRISE
-# =========================
-st.markdown(
-    """
-    <style>
-    :root {
-        --bg: #07111f;
-        --panel: #0c192b;
-        --panel2: #101826;
-        --line: #1c334e;
-        --text: #f6f9ff;
-        --muted: #aab4c0;
-        --blue: #00a7ff;
-        --blue2: #0d6efd;
-        --yellow: #ffd21a;
-        --cyan: #4cc9ff;
-    }
-    .stApp { background: var(--bg); color: var(--text); }
-    [data-testid="stSidebar"] { background: #050b13; border-right: 1px solid #14304c; }
-    h1, h2, h3 { color: var(--text); font-weight: 800; }
-    .subtitle { color: #79c7ff; font-size: 1.05rem; text-align:center; margin-top:-10px; }
-    .kpi-grid { display:grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap:14px; margin: 18px 0 24px 0; }
-    .kpi-card { background: linear-gradient(145deg,#0c192b,#091525); border:1px solid #173b60; border-radius:18px; padding:18px; box-shadow:0 10px 28px rgba(0,0,0,.25); }
-    .kpi-label { color:#9fb0c0; font-size:.88rem; font-weight:700; text-transform:uppercase; letter-spacing:.04em; }
-    .kpi-value { color:#ffffff; font-size:1.65rem; font-weight:900; margin-top:8px; }
-    .kpi-sub { color:#69c7ff; font-size:.85rem; margin-top:5px; }
-    .eirox-alert { background:#3b202b; border:1px solid #67364a; color:#ff7070; padding:18px 22px; border-radius:12px; font-weight:700; }
-    .dre-wrap { overflow:auto; max-height: 72vh; border:1px solid #173b60; border-radius:16px; background:#0b1628; }
-    table.dre-table { border-collapse: separate; border-spacing:0; width:100%; min-width:1200px; font-size:15px; }
-    .dre-table th { position:sticky; top:0; z-index:2; background:#171b25; color:#c8d1dd; text-align:right; border-bottom:1px solid #25364b; padding:13px 12px; white-space:nowrap; }
-    .dre-table th:first-child { text-align:left; position:sticky; left:0; z-index:3; min-width:420px; }
-    .dre-table td { padding:12px 12px; border-bottom:1px solid #1b2b40; border-right:1px solid #1b2b40; color:#ffffff; text-align:right; white-space:nowrap; }
-    .dre-table td:first-child { text-align:left; position:sticky; left:0; z-index:1; background:inherit; min-width:420px; }
-    .row-base td { background:#cfe0f2 !important; color:#00152a !important; font-weight:900; }
-    .row-result td { background:#ffd21a !important; color:#00152a !important; font-weight:950; }
-    .row-group td { background:#182d46 !important; color:#ffffff !important; font-weight:900; }
-    .row-result td { background:#ffd21a !important; color:#00152a !important; font-weight:950; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
-    .row-base td { background:#cfe0f2 !important; color:#00152a !important; font-weight:900; }
-    .row-normal td { background:#081629; }
-    .row-normal:hover td { background:#10233a; }
-    .logo-box { text-align:center; margin-top: 8px; }
-    .logo-box img { max-width: 160px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+PASTA_APP = Path(__file__).resolve().parent
+CAMINHOS_BASE = [
+    PASTA_APP / "data" / "DRE_Consolidado_Moderno.xlsx",
+    PASTA_APP / "DRE_Consolidado_Moderno.xlsx",
+    Path.cwd() / "data" / "DRE_Consolidado_Moderno.xlsx",
+    Path.cwd() / "DRE_Consolidado_Moderno.xlsx",
+    Path.home() / "Desktop" / "Dre" / "data" / "DRE_Consolidado_Moderno.xlsx",
+    Path.home() / "Desktop" / "Dre" / "DRE_Consolidado_Moderno.xlsx",
+]
+LOGO_PATHS = [
+    PASTA_APP / "assets" / "logo_eirox.png",
+    PASTA_APP / "logo_eirox.png",
+    Path.cwd() / "assets" / "logo_eirox.png",
+    Path.cwd() / "logo_eirox.png",
+]
 
-# =========================
-# FUNÇÕES AUXILIARES
-# =========================
 MESES_PT = {
-    "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
-    "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12,
+    1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai", 6: "jun",
+    7: "jul", 8: "ago", 9: "set", 10: "out", 11: "nov", 12: "dez"
 }
-MESES_ORDEM = {v: k for k, v in MESES_PT.items()}
+MESES_INV = {v: k for k, v in MESES_PT.items()}
 
+# =========================
+# CSS PROFISSIONAL
+# =========================
+def inject_css():
+    st.markdown(
+        """
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+        .stApp { background: radial-gradient(circle at top, #07192d 0, #020914 42%, #020713 100%); color: #f8fafc; }
+        section[data-testid="stSidebar"] { background: #020811; border-right: 1px solid #123c64; }
+        .main .block-container { padding-top: 2rem; max-width: 1480px; }
+        .hero { text-align:center; padding: 10px 0 18px 0; }
+        .hero img { max-width: 145px; margin-bottom: 8px; }
+        .hero h1 { font-size: 3.2rem; line-height: 1.05; margin: 0; font-weight: 800; color: #f8fafc; }
+        .hero p { font-size: 1.05rem; color: #52b8ff; margin-top: 12px; }
+        .kpi-grid { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 14px; margin: 18px 0 24px 0; }
+        .kpi-card { background: linear-gradient(180deg, #0f2035 0%, #081426 100%); border: 1px solid #1d4f79; border-radius: 18px; padding: 18px; box-shadow: 0 10px 28px rgba(0,0,0,.28); }
+        .kpi-title { color: #9fb3c8; font-size: .84rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+        .kpi-value { font-size: 1.55rem; font-weight: 800; color: #ffffff; margin-top: 8px; }
+        .kpi-sub { color: #52b8ff; font-size: .85rem; margin-top: 4px; }
+        .section-title { font-weight: 800; font-size: 1.55rem; margin: 28px 0 10px; color: #fff; }
+        .alert-ok { background:#0c3f2a; color:#5cff9d; padding:13px 16px; border-radius:12px; border:1px solid #238a55; font-weight:700; }
+        .alert-err { background:#3a1b26; color:#ff6673; padding:13px 16px; border-radius:12px; border:1px solid #773344; font-weight:700; }
+        .path-box { background:#09243a; color:#9bd3ff; padding:12px; border-radius:12px; font-size:.82rem; word-break:break-all; }
+        .dre-wrap { border:1px solid #164b78; border-radius: 16px; overflow:auto; max-height: 760px; background:#06111f; box-shadow:0 10px 30px rgba(0,0,0,.25); }
+        table.dre-table { border-collapse: collapse; width: 100%; min-width: 1120px; font-size: 14px; }
+        table.dre-table th { position: sticky; top: 0; z-index: 3; background:#171b26; color:#dbe8f7; padding:12px 10px; border:1px solid #253850; text-align:right; white-space:nowrap; }
+        table.dre-table th:first-child { left:0; z-index:4; text-align:left; min-width:410px; }
+        table.dre-table td { padding:11px 10px; border:1px solid #20324a; text-align:right; white-space:nowrap; color:#f8fafc; }
+        table.dre-table td:first-child { position: sticky; left:0; z-index:2; text-align:left; min-width:410px; background:inherit; }
+        tr.linha-normal { background:#071426; }
+        tr.linha-bloco { background:#cfe1f3; color:#001021; font-weight:800; }
+        tr.linha-bloco td { color:#001021; font-weight:800; }
+        tr.linha-resultado { background:#ffd21f; color:#001021; font-weight:900; }
+        tr.linha-resultado td { color:#001021; font-weight:900; }
+        tr.linha-grupo { background:#202938; color:#f7fbff; font-weight:800; font-style:italic; }
+        tr.linha-grupo td { color:#f7fbff; font-weight:800; }
+        tr.linha-estrategica { background:#ffca0a; color:#001021; font-weight:900; }
+        tr.linha-estrategica td { color:#001021; font-weight:900; }
+        .small-note { color:#9aa7b5; font-size:.86rem; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
-def br_money(v):
-    try:
-        v = float(v)
-    except Exception:
-        v = 0.0
-    s = f"R$ {v:,.2f}"
-    return s.replace(",", "X").replace(".", ",").replace("X", ".")
-
-
-def br_pct(v):
-    try:
-        v = float(v)
-    except Exception:
-        v = 0.0
-    if abs(v) > 1.5:  # caso venha como 38 em vez de 0.38
-        v = v / 100
-    return f"{v*100:.2f}%".replace(".", ",")
-
-
-def mes_para_tuple(mes):
-    m = re.match(r"^([a-zç]{3})/(\d{2})$", str(mes).strip().lower())
-    if not m:
-        return (9999, 99)
-    nome, ano2 = m.groups()
-    return (2000 + int(ano2), MESES_PT.get(nome, 99))
-
-
-def ordenar_meses(meses):
-    return sorted([m for m in meses if isinstance(m, str)], key=mes_para_tuple)
-
-
-def meses_fechados_ano_atual(meses):
-    hoje = date.today()
-    ano_atual = hoje.year
-    mes_atual = hoje.month
-    fechados = []
-    for m in ordenar_meses(meses):
-        ano, mes_num = mes_para_tuple(m)
-        if ano == ano_atual and mes_num < mes_atual:
-            fechados.append(m)
-    # fallback para ambientes onde a data do servidor não bata com a base
-    if not fechados:
-        meses_validos = [m for m in ordenar_meses(meses) if mes_para_tuple(m)[0] != 9999]
-        if len(meses_validos) > 1:
-            fechados = meses_validos[:-1]
-        else:
-            fechados = meses_validos
-    return fechados
-
-
-def localizar_base():
-    cwd = Path.cwd()
-    candidatos_base = [
-        cwd,
-        cwd.parent,
-        Path(__file__).resolve().parent,
-        Path(__file__).resolve().parent.parent,
-        Path.home() / "Desktop" / "Dre",
-    ]
-    nomes = [
-        Path("data") / "DRE_Consolidado_Moderno.xlsx",
-        Path("DRE_Consolidado_Moderno.xlsx"),
-        Path("data") / "DRE_Consolidado_Robusto.xlsx",
-        Path("DRE_Consolidado_Robusto.xlsx"),
-    ]
-    for base in candidatos_base:
-        for nome in nomes:
-            arq = base / nome
-            if arq.exists():
-                return arq
-    return None
-
-
-def localizar_logo():
-    cwd = Path.cwd()
-    candidatos = [
-        cwd / "assets" / "logo_eirox.png",
-        cwd / "assets" / "logo eirox(3).png",
-        Path(__file__).resolve().parent / "assets" / "logo_eirox.png",
-        Path(__file__).resolve().parent / "assets" / "logo eirox(3).png",
-        Path.home() / "Desktop" / "Dre" / "assets" / "logo_eirox.png",
-    ]
+# =========================
+# HELPERS DE FORMATAÇÃO
+# =========================
+def localizar_arquivo(candidatos: List[Path]) -> Optional[Path]:
     for p in candidatos:
         if p.exists():
             return p
     return None
 
 
-@st.cache_data(show_spinner=False)
-def carregar_excel(path_str):
-    path = Path(path_str)
-    xl = pd.ExcelFile(path)
-    sheets = {}
-    for sh in xl.sheet_names:
+def img_to_base64(path: Path) -> str:
+    try:
+        return base64.b64encode(path.read_bytes()).decode("utf-8")
+    except Exception:
+        return ""
+
+
+def norm(txt) -> str:
+    if pd.isna(txt):
+        return ""
+    s = str(txt).strip().upper()
+    repl = {"Á":"A","À":"A","Â":"A","Ã":"A","É":"E","Ê":"E","Í":"I","Ó":"O","Ô":"O","Õ":"O","Ú":"U","Ç":"C"}
+    for a,b in repl.items():
+        s = s.replace(a,b)
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+
+def br_money(v) -> str:
+    try:
+        if pd.isna(v) or v == "":
+            return "R$ 0,00"
+        v = float(v)
+        txt = f"R$ {v:,.2f}"
+        return txt.replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "R$ 0,00"
+
+
+def br_percent(v) -> str:
+    try:
+        if pd.isna(v) or v == "":
+            return "0,00%"
+        v = float(v)
+        # se veio como 41,69 em vez de 0,4169, mantém como 41,69%
+        if abs(v) <= 1.5:
+            v *= 100
+        return f"{v:,.2f}%".replace(",", "X").replace(".", ",").replace("X", ".")
+    except Exception:
+        return "0,00%"
+
+
+def parse_num(v):
+    if pd.isna(v):
+        return 0.0
+    if isinstance(v, (int, float, np.number)):
+        return float(v)
+    s = str(v).strip()
+    if s in ["", "-", "nan", "None"]:
+        return 0.0
+    s = s.replace("R$", "").replace("%", "").replace(" ", "")
+    # padrão brasileiro
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def mes_key(mes: str) -> Tuple[int, int]:
+    m = re.search(r"([a-zç]{3})/(\d{2})", str(mes).lower())
+    if not m:
+        return (9999, 99)
+    mm = MESES_INV.get(m.group(1), 99)
+    yy = 2000 + int(m.group(2))
+    return (yy, mm)
+
+
+def meses_fechados_ano_atual(meses: List[str]) -> List[str]:
+    hoje = datetime.today()
+    ano_atual = hoje.year
+    mes_atual = hoje.month
+    fechados = []
+    for m in meses:
+        ano, mes = mes_key(m)
+        if ano == ano_atual and mes < mes_atual:
+            fechados.append(m)
+    return fechados or meses
+
+# =========================
+# LEITURA DO EXCEL DRE
+# =========================
+def escolher_aba(path: Path) -> str:
+    xls = pd.ExcelFile(path)
+    nomes = xls.sheet_names
+    for preferida in ["DRE", "DRE_ESTRUTURADA", "DRE GERENCIAL", "DRE_ESTRUTURADA_MODERNA"]:
+        if preferida in nomes:
+            return preferida
+    # procura aba que contenha Linha DRE
+    for aba in nomes:
         try:
-            sheets[sh] = pd.read_excel(path, sheet_name=sh)
+            tmp = pd.read_excel(path, sheet_name=aba, header=None, nrows=15)
+            if tmp.astype(str).apply(lambda col: col.str.contains("Linha DRE", case=False, na=False)).any().any():
+                return aba
         except Exception:
             pass
-    return sheets
+    return nomes[0]
 
 
-def montar_dre_formatado(df, meses_sel):
-    # Esperado: aba DRE_ESTRUTURADA com Linha DRE, Tipo, Nível, Ordem e colunas <mes> Valor/%
-    df = df.copy()
-    if "Ordem" in df.columns:
-        df = df.sort_values("Ordem")
+@st.cache_data(show_spinner=False)
+def carregar_dre(path_str: str) -> Tuple[pd.DataFrame, List[str], str]:
+    path = Path(path_str)
+    aba = escolher_aba(path)
+
+    raw = pd.read_excel(path, sheet_name=aba, header=None, dtype=object)
+    raw = raw.dropna(how="all").reset_index(drop=True)
+
+    # Caso 1: arquivo já com cabeçalho plano: Linha DRE, jan/26 Valor, jan/26 %, ...
+    first_rows_text = raw.head(8).astype(str).to_string()
+    header_row = None
+    line_col = None
+
+    for i in range(min(20, len(raw))):
+        for j in range(raw.shape[1]):
+            if "LINHA DRE" in norm(raw.iat[i, j]):
+                header_row = i
+                line_col = j
+                break
+        if header_row is not None:
+            break
+
+    if header_row is None:
+        # tenta ler como dataframe comum
+        df_try = pd.read_excel(path, sheet_name=aba)
+        df_try.columns = [str(c).strip() for c in df_try.columns]
+        linha_col = None
+        for c in df_try.columns:
+            if "LINHA DRE" in norm(c) or norm(c) in ["DRE", "CONTA", "LINHA"]:
+                linha_col = c
+                break
+        if linha_col is None:
+            raise ValueError(f"Não encontrei a coluna Linha DRE na aba {aba}.")
+        dre = df_try.rename(columns={linha_col: "Linha DRE"}).copy()
+        meses = sorted({c.replace(" Valor", "").replace(" %", "") for c in dre.columns if re.search(r"[a-zç]{3}/\d{2}", str(c).lower())}, key=mes_key)
+        return dre, meses, aba
+
+    # Se linha anterior tem meses e a linha atual tem Valor/%
+    mes_row = header_row - 1 if header_row > 0 else header_row
+
+    col_map: Dict[int, str] = {line_col: "Linha DRE"}
+    current_month = ""
+
+    for col in range(line_col + 1, raw.shape[1]):
+        maybe_month = raw.iat[mes_row, col] if mes_row >= 0 else ""
+        if pd.notna(maybe_month) and re.search(r"[a-zç]{3}/\d{2}", str(maybe_month).lower()):
+            current_month = re.search(r"[a-zç]{3}/\d{2}", str(maybe_month).lower()).group(0)
+
+        sub = norm(raw.iat[header_row, col])
+        if sub in ["VALOR", "VALORES"]:
+            col_map[col] = f"{current_month} Valor"
+        elif sub in ["%", "PERCENTUAL"]:
+            col_map[col] = f"{current_month} %"
+        else:
+            # Caso cabeçalho já esteja em uma célula só: jan/26 Valor
+            text = str(raw.iat[header_row, col])
+            m = re.search(r"([a-zç]{3}/\d{2}).*(valor|%)", text.lower())
+            if m:
+                col_map[col] = f"{m.group(1)} {'%' if '%' in text else 'Valor'}"
+
+    data = raw.iloc[header_row + 1:].copy()
+    data = data[[c for c in col_map.keys() if c < data.shape[1]]]
+    data.columns = [col_map[c] for c in col_map.keys() if c < raw.shape[1]]
+    data = data.dropna(how="all")
+    data["Linha DRE"] = data["Linha DRE"].astype(str).str.strip()
+    data = data[(data["Linha DRE"] != "") & (data["Linha DRE"].str.lower() != "nan")]
+
+    # remove linhas de título/rodapé que não são DRE
+    data = data[~data["Linha DRE"].str.contains("Mês Referência|Realizado|Atualizado automaticamente", case=False, na=False)]
+
+    meses = []
+    for c in data.columns:
+        m = re.match(r"([a-zç]{3}/\d{2})\s+(Valor|%)", str(c).lower())
+        if m and m.group(1) not in meses:
+            meses.append(m.group(1))
+    meses = sorted(meses, key=mes_key)
+
+    # força numérico nas colunas
+    for c in data.columns:
+        if c != "Linha DRE":
+            data[c] = data[c].apply(parse_num)
+
+    return data.reset_index(drop=True), meses, aba
+
+# =========================
+# CLASSIFICAÇÃO VISUAL
+# =========================
+def classe_linha(linha: str) -> str:
+    l = norm(linha)
+    if any(x in l for x in [
+        "RECEITA OPERACIONAL LIQUIDA",
+        "LUCRO BRUTO",
+        "RESULTADO ANTES DO RESULTADO FINANCEIRO",
+        "EBITDA",
+        "LAJIDA",
+        "RESULTADO ANTES DOS TRIBUTOS",
+        "LAIR",
+        "LUCRO LIQUIDO",
+        "MARGEM DE CONTRIBUICAO TOTAL",
+        "MARGEM DE CONTRIBUICAO PERCENTUAL",
+        "PONTO DE EQUILIBRIO",
+        "POSICAO FINAL",
+    ]):
+        return "linha-resultado"
+    if re.match(r"^\d+\.", l) or any(x in l for x in [
+        "RECEITA OPERACIONAL BRUTA", "DEDUCOES DA RECEITA BRUTA", "CUSTOS DAS VENDAS",
+        "DESPESAS OPERACIONAIS", "RESULTADO FINANCEIRO", "TRIBUTOS SOBRE O LUCRO",
+        "CONCILIACAO DE FLUXO", "ANALISE DE PONTO DE EQUILIBRIO", "CALCULOS INTERMEDIARIOS"
+    ]):
+        return "linha-bloco"
+    if any(x in l for x in [
+        "DESPESAS COM PESSOAL", "DESPESAS ADMINISTRATIVAS", "DESPESAS COM VENDAS",
+        "MARKETING", "INDICADORES", "RECEITAS", "ESTOQUE A CUSTO", "CONTAS A PAGAR FORNECEDOR"
+    ]):
+        return "linha-grupo"
+    return "linha-normal"
+
+
+def formatar_valor_por_linha(linha: str, coluna: str, valor) -> str:
+    l = norm(linha)
+    if coluna.endswith(" %"):
+        return br_percent(valor)
+    if "PERCENTUAL" in l and coluna.endswith(" Valor"):
+        return br_percent(valor)
+    return br_money(valor)
+
+
+def montar_tabela_html(df: pd.DataFrame, meses: List[str]) -> str:
     cols = ["Linha DRE"]
-    for m in meses_sel:
+    for m in meses:
         if f"{m} Valor" in df.columns:
             cols.append(f"{m} Valor")
         if f"{m} %" in df.columns:
             cols.append(f"{m} %")
-    cols = [c for c in cols if c in df.columns]
-    out = df[cols].copy()
+    show = df[cols].copy()
 
-    # Formata todos os valores em padrão brasileiro.
-    # Exceção: linhas percentuais estratégicas precisam aparecer como %, não como R$.
-    linhas_percentuais = [
-        "MARGEM DE CONTRIBUIÇÃO PERCENTUAL",
-        "MARGEM DE CONTRIBUICAO PERCENTUAL",
-    ]
-
-    for idx, row in out.iterrows():
-        linha_txt = str(row.get("Linha DRE", "")).upper()
-        linha_percentual = any(x in linha_txt for x in linhas_percentuais)
-
-        for c in out.columns:
+    html = '<div class="dre-wrap"><table class="dre-table"><thead><tr>'
+    for c in show.columns:
+        html += f"<th>{c}</th>"
+    html += "</tr></thead><tbody>"
+    for _, row in show.iterrows():
+        linha = row["Linha DRE"]
+        cls = classe_linha(linha)
+        html += f'<tr class="{cls}">'
+        for c in show.columns:
             if c == "Linha DRE":
-                continue
-            if c.endswith(" Valor"):
-                out.at[idx, c] = br_pct(row[c]) if linha_percentual else br_money(row[c])
-            elif c.endswith(" %"):
-                out.at[idx, c] = br_pct(row[c])
-    return out
-
-
-def row_class(linha):
-    t = str(linha).upper()
-
-    # Resultados principais e indicadores finais: destaque amarelo executivo
-    resultados = [
-        "(=)",
-        "LUCRO BRUTO",
-        "EBITDA",
-        "LAJIDA",
-        "LAIR",
-        "LUCRO LÍQUIDO",
-        "LUCRO LIQUIDO",
-        "RECEITA OPERACIONAL LÍQUIDA",
-        "RECEITA OPERACIONAL LIQUIDA",
-        "RECEITA TOTAL",
-        "MARGEM DE CONTRIBUIÇÃO TOTAL",
-        "MARGEM DE CONTRIBUICAO TOTAL",
-        "MARGEM DE CONTRIBUIÇÃO PERCENTUAL",
-        "MARGEM DE CONTRIBUICAO PERCENTUAL",
-        "PONTO DE EQUILÍBRIO",
-        "PONTO DE EQUILIBRIO",
-        "POSIÇÃO FINAL",
-        "POSICAO FINAL",
-    ]
-    if any(x in t for x in resultados):
-        return "row-result"
-
-    # Blocos estruturais numerados: azul claro Eirox
-    if re.match(r"^\s*\d+\.", t):
-        return "row-base"
-
-    # Agrupadores e linhas de análise: cinza premium
-    grupos = [
-        "DESPESAS COM PESSOAL",
-        "DESPESAS ADMINISTRATIVAS",
-        "DESPESAS COM VENDAS",
-        "CONCILIAÇÃO",
-        "CONCILIACAO",
-        "ANÁLISE DE PONTO DE EQUILÍBRIO",
-        "ANALISE DE PONTO DE EQUILIBRIO",
-        "CÁLCULOS INTERMEDIÁRIOS",
-        "CALCULOS INTERMEDIARIOS",
-        "DESPESAS FIXAS",
-        "DESPESAS VARIÁVEIS",
-        "DESPESAS VARIAVEIS",
-        "CUSTOS E DESPESAS FIXAS",
-        "CUSTO MÉDIO DE VENDA",
-        "CUSTO MEDIO DE VENDA",
-        "TOTAL DE CUSTOS VARIÁVEIS",
-        "TOTAL DE CUSTOS VARIAVEIS",
-    ]
-    if any(x in t for x in grupos):
-        return "row-group"
-
-    return "row-normal"
-
-
-def dataframe_para_html(df):
-    html = ['<div class="dre-wrap"><table class="dre-table"><thead><tr>']
-    for c in df.columns:
-        html.append(f"<th>{c}</th>")
-    html.append("</tr></thead><tbody>")
-    for _, r in df.iterrows():
-        cls = row_class(r.get("Linha DRE", ""))
-        html.append(f'<tr class="{cls}">')
-        for c in df.columns:
-            html.append(f"<td>{r.get(c, '')}</td>")
-        html.append("</tr>")
-    html.append("</tbody></table></div>")
-    return "".join(html)
-
-
-def pegar_valor_linha(dre, linha_contains, mes):
-    if dre is None or dre.empty:
-        return 0
-    filtro = dre["Linha DRE"].astype(str).str.upper().str.contains(linha_contains.upper(), regex=False, na=False)
-    col = f"{mes} Valor"
-    if not filtro.any() or col not in dre.columns:
-        return 0
-    return float(pd.to_numeric(dre.loc[filtro, col], errors="coerce").fillna(0).iloc[0])
-
-
-def pegar_pct_linha(dre, linha_contains, mes):
-    if dre is None or dre.empty:
-        return 0
-    filtro = dre["Linha DRE"].astype(str).str.upper().str.contains(linha_contains.upper(), regex=False, na=False)
-    col = f"{mes} %"
-    if not filtro.any() or col not in dre.columns:
-        return 0
-    return float(pd.to_numeric(dre.loc[filtro, col], errors="coerce").fillna(0).iloc[0])
+                txt = str(row[c])
+            else:
+                txt = formatar_valor_por_linha(linha, c, row[c])
+            html += f"<td>{txt}</td>"
+        html += "</tr>"
+    html += "</tbody></table></div>"
+    return html
 
 # =========================
-# SIDEBAR
+# INDICADORES
 # =========================
-with st.sidebar:
-    st.markdown("### ⚙️ Atualização")
-    st.caption("As informações são lidas do arquivo consolidado gerado pelo banco do DRE. Ao trocar as bases, atualize o consolidado e clique em Atualizar Base.")
-    if st.button("🔄 Atualizar Base", use_container_width=True):
+def buscar_linha(df: pd.DataFrame, termos: List[str]) -> Optional[pd.Series]:
+    for termo in termos:
+        mask = df["Linha DRE"].apply(lambda x: termo in norm(x))
+        if mask.any():
+            return df.loc[mask].iloc[0]
+    return None
+
+
+def valor_linha(df: pd.DataFrame, termos: List[str], mes: str, tipo="Valor") -> float:
+    row = buscar_linha(df, termos)
+    col = f"{mes} {tipo}"
+    if row is None or col not in df.columns:
+        return 0.0
+    return parse_num(row[col])
+
+
+def card(title: str, value: str, sub: str = ""):
+    return f"""
+    <div class="kpi-card">
+      <div class="kpi-title">{title}</div>
+      <div class="kpi-value">{value}</div>
+      <div class="kpi-sub">{sub}</div>
+    </div>
+    """
+
+
+def painel_kpis(df: pd.DataFrame, mes: str):
+    receita = valor_linha(df, ["RECEITA OPERACIONAL BRUTA"], mes)
+    rec_liq = valor_linha(df, ["RECEITA OPERACIONAL LIQUIDA"], mes)
+    lucro_bruto = valor_linha(df, ["LUCRO BRUTO"], mes)
+    ebitda = valor_linha(df, ["RESULTADO ANTES DO RESULTADO FINANCEIRO", "EBITDA", "LAJIDA"], mes)
+    lucro_liq = valor_linha(df, ["LUCRO LIQUIDO"], mes)
+    cmv_pct = valor_linha(df, ["CUSTOS DAS VENDAS", "MERCADORIAS (CMP)", "CUSTO MEDIO DE VENDA"], mes, "%")
+
+    margem_ebitda = ebitda / receita if receita else 0
+    margem_liq = lucro_liq / receita if receita else 0
+
+    html = '<div class="kpi-grid">'
+    html += card("Receita Bruta", br_money(receita), mes)
+    html += card("Receita Líquida", br_money(rec_liq), mes)
+    html += card("Lucro Bruto", br_money(lucro_bruto), br_percent(lucro_bruto/receita if receita else 0))
+    html += card("EBITDA", br_money(ebitda), br_percent(margem_ebitda))
+    html += card("Lucro Líquido", br_money(lucro_liq), br_percent(margem_liq))
+    html += card("CMV %", br_percent(cmv_pct), "sobre receita")
+    html += card("Margem EBITDA", br_percent(margem_ebitda), "resultado operacional")
+    html += card("Margem Líquida", br_percent(margem_liq), "resultado final")
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def grafico_evolucao(df: pd.DataFrame, meses: List[str]):
+    linhas = {
+        "Receita Bruta": ["RECEITA OPERACIONAL BRUTA"],
+        "Lucro Bruto": ["LUCRO BRUTO"],
+        "EBITDA": ["RESULTADO ANTES DO RESULTADO FINANCEIRO", "EBITDA"],
+        "Lucro Líquido": ["LUCRO LIQUIDO"],
+    }
+    fig = go.Figure()
+    for nome, termos in linhas.items():
+        vals = [valor_linha(df, termos, m) for m in meses]
+        fig.add_trace(go.Scatter(x=meses, y=vals, mode="lines+markers", name=nome))
+    fig.update_layout(
+        height=390,
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(l=20, r=20, t=35, b=20),
+        legend=dict(orientation="h", y=1.12),
+        yaxis_tickprefix="R$ ",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+
+def resultados_estrategicos(df: pd.DataFrame, mes: str):
+    receita = valor_linha(df, ["RECEITA TOTAL", "RECEITA OPERACIONAL BRUTA"], mes)
+    margem_contrib = valor_linha(df, ["MARGEM DE CONTRIBUICAO TOTAL"], mes)
+    margem_pct = valor_linha(df, ["MARGEM DE CONTRIBUICAO PERCENTUAL"], mes, "Valor")
+    ponto_eq = valor_linha(df, ["PONTO DE EQUILIBRIO"], mes)
+    cmv = valor_linha(df, ["CUSTO MEDIO DE VENDA", "CUSTOS DAS VENDAS"], mes)
+    folga = receita - ponto_eq if ponto_eq else 0
+
+    html = '<div class="kpi-grid">'
+    html += card("Margem de Contribuição", br_money(margem_contrib), br_percent(margem_pct))
+    html += card("Ponto de Equilíbrio", br_money(ponto_eq), "receita mínima")
+    html += card("Folga Operacional", br_money(folga), "receita - ponto equilíbrio")
+    html += card("CMV", br_money(cmv), br_percent(cmv/receita if receita else 0))
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+# =========================
+# APP
+# =========================
+def main():
+    inject_css()
+
+    if st.sidebar.button("🔄 Atualizar Base", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-    st.divider()
-    st.markdown("### 📁 Base monitorada")
-    base_path = localizar_base()
-    if base_path:
-        st.success(base_path.name)
-        st.caption(str(base_path))
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📁 Base monitorada")
+
+    arquivo_base = localizar_arquivo(CAMINHOS_BASE)
+    logo = localizar_arquivo(LOGO_PATHS)
+
+    if arquivo_base:
+        st.sidebar.markdown('<div class="alert-ok">DRE_Consolidado_Moderno.xlsx</div>', unsafe_allow_html=True)
+        st.sidebar.markdown(f'<div class="path-box">{arquivo_base}</div>', unsafe_allow_html=True)
     else:
-        st.error("DRE_Consolidado_Moderno.xlsx não encontrado")
+        st.sidebar.markdown('<div class="alert-err">Base não encontrada</div>', unsafe_allow_html=True)
+        st.sidebar.write("Coloque o arquivo em `data/DRE_Consolidado_Moderno.xlsx` ou na raiz do projeto.")
 
-# =========================
-# CABEÇALHO
-# =========================
-logo = localizar_logo()
-if logo:
-    with open(logo, "rb") as f:
-        b64 = base64.b64encode(f.read()).decode()
-    st.markdown(f'<div class="logo-box"><img src="data:image/png;base64,{b64}" /></div>', unsafe_allow_html=True)
+    logo_html = ""
+    if logo:
+        b64 = img_to_base64(logo)
+        logo_html = f'<img src="data:image/png;base64,{b64}" />'
 
-st.markdown("<h1 style='text-align:center;font-size:3.5rem;margin-top:0;'>DRE Empresa Online</h1>", unsafe_allow_html=True)
-st.markdown("<div class='subtitle'>Dashboard financeiro gerencial no padrão Eirox Pricing Online • Meses fechados do ano atual • Busca completa das bases</div>", unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="hero">
+            {logo_html}
+            <h1>DRE Empresa Online</h1>
+            <p>Dashboard financeiro gerencial • DRE no formato aprovado • Meses fechados do ano atual</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-# =========================
-# CARREGAMENTO
-# =========================
-if not base_path:
-    st.markdown("<div class='eirox-alert'>Base não encontrada. Coloque DRE_Consolidado_Moderno.xlsx na raiz do projeto ou dentro da pasta data.</div>", unsafe_allow_html=True)
-    st.stop()
+    if not arquivo_base:
+        st.error("Nenhuma base foi encontrada. Verifique o arquivo DRE_Consolidado_Moderno.xlsx.")
+        return
 
-sheets = carregar_excel(str(base_path))
-dre = sheets.get("DRE_ESTRUTURADA")
-dados = sheets.get("DADOS_DRE")
-nao_class = sheets.get("NAO_CLASSIFICADOS", pd.DataFrame())
-resumo_loja = sheets.get("RESUMO_LOJA", pd.DataFrame())
+    try:
+        df, meses, aba = carregar_dre(str(arquivo_base))
+    except Exception as e:
+        st.error(f"Erro ao ler a base: {e}")
+        return
 
-if dre is None or dre.empty:
-    st.markdown("<div class='eirox-alert'>A aba DRE_ESTRUTURADA não foi encontrada no consolidado.</div>", unsafe_allow_html=True)
-    st.stop()
+    if not meses:
+        st.error(f"Nenhum mês foi identificado na aba {aba}. Verifique se a coluna Linha DRE e os meses estão no formato jan/26 Valor | jan/26 %. ")
+        return
 
-# identifica todos os meses presentes nas colunas do DRE, não apenas últimos 3
-all_months = []
-for c in dre.columns:
-    m = re.match(r"^([a-zç]{3}/\d{2}) Valor$", str(c).strip().lower())
-    if m:
-        all_months.append(m.group(1))
-all_months = ordenar_meses(list(dict.fromkeys(all_months)))
-
-# remove colunas técnicas sem mês
-all_months_validos = [m for m in all_months if m.lower() != "sem mês"]
-default_months = meses_fechados_ano_atual(all_months_validos)
-
-if not all_months_validos:
-    st.markdown("<div class='eirox-alert'>Nenhum mês foi identificado na aba DRE_ESTRUTURADA.</div>", unsafe_allow_html=True)
-    st.stop()
-
-with st.sidebar:
-    st.divider()
-    st.markdown("### 📅 Meses")
-    st.caption("Padrão: meses fechados do ano atual. Agora o sistema busca todos os meses existentes no arquivo.")
-    selected_months = st.multiselect(
-        "Selecione os meses",
-        options=all_months_validos,
-        default=default_months,
-        key="meses_dre",
+    meses_padrao = meses_fechados_ano_atual(meses)
+    selected_months = st.sidebar.multiselect(
+        "Meses",
+        options=meses,
+        default=meses_padrao,
     )
     if not selected_months:
-        selected_months = default_months or all_months_validos
+        selected_months = meses_padrao
 
-selected_months = ordenar_meses(selected_months)
-ultimo = selected_months[-1]
+    ultimo = selected_months[-1]
+    st.sidebar.markdown("---")
+    st.sidebar.caption(f"Aba lida: {aba}")
+    st.sidebar.caption(f"Meses encontrados: {', '.join(meses)}")
 
-# =========================
-# KPIS
-# =========================
-receita = pegar_valor_linha(dre, "1. RECEITA OPERACIONAL BRUTA", ultimo)
-receita_liquida = pegar_valor_linha(dre, "3. (=) RECEITA OPERACIONAL LÍQUIDA", ultimo)
-lucro_bruto = pegar_valor_linha(dre, "5. (=) LUCRO BRUTO", ultimo)
-ebitda = pegar_valor_linha(dre, "7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO", ultimo)
-lucro_liquido = pegar_valor_linha(dre, "11. (=) LUCRO LÍQUIDO", ultimo)
-mg_ebitda = pegar_pct_linha(dre, "7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO", ultimo)
-mg_liquida = pegar_pct_linha(dre, "11. (=) LUCRO LÍQUIDO", ultimo)
+    tab1, tab2, tab3 = st.tabs(["📊 Painel Executivo", "📋 DRE Gerencial", "🎯 Resultados Estratégicos"])
 
-st.markdown(f"<p style='text-align:center;color:#aab4c0;'>Último mês selecionado: <b>{ultimo}</b> • Meses encontrados na base: <b>{', '.join(all_months_validos)}</b></p>", unsafe_allow_html=True)
+    with tab1:
+        st.markdown('<div class="section-title">Painel Executivo</div>', unsafe_allow_html=True)
+        painel_kpis(df, ultimo)
+        st.markdown('<div class="section-title">Evolução Mensal</div>', unsafe_allow_html=True)
+        grafico_evolucao(df, selected_months)
 
-st.markdown(
-    f"""
-    <div class="kpi-grid">
-        <div class="kpi-card"><div class="kpi-label">Receita Bruta</div><div class="kpi-value">{br_money(receita)}</div><div class="kpi-sub">{ultimo}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Receita Líquida</div><div class="kpi-value">{br_money(receita_liquida)}</div><div class="kpi-sub">{br_pct(receita_liquida/receita if receita else 0)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Lucro Bruto</div><div class="kpi-value">{br_money(lucro_bruto)}</div><div class="kpi-sub">Margem {br_pct(lucro_bruto/receita if receita else 0)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">EBITDA</div><div class="kpi-value">{br_money(ebitda)}</div><div class="kpi-sub">Margem {br_pct(mg_ebitda)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Lucro Líquido</div><div class="kpi-value">{br_money(lucro_liquido)}</div><div class="kpi-sub">Margem {br_pct(mg_liquida)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Meses no filtro</div><div class="kpi-value">{len(selected_months)}</div><div class="kpi-sub">{', '.join(selected_months)}</div></div>
-        <div class="kpi-card"><div class="kpi-label">Não classificados</div><div class="kpi-value">{0 if nao_class.empty else len(nao_class)}</div><div class="kpi-sub">Fora do DRE principal</div></div>
-        <div class="kpi-card"><div class="kpi-label">Base</div><div class="kpi-value">OK</div><div class="kpi-sub">{base_path.name}</div></div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+    with tab2:
+        st.markdown('<div class="section-title">DRE Gerencial</div>', unsafe_allow_html=True)
+        st.markdown('<div class="small-note">Modelo mantido no formato aprovado: meses em colunas, valores e percentuais lado a lado, com todos os blocos estruturais destacados.</div>', unsafe_allow_html=True)
+        st.markdown(montar_tabela_html(df, selected_months), unsafe_allow_html=True)
 
-# =========================
-# ABAS
-# =========================
-aba1, aba2, aba3, aba4 = st.tabs(["📊 Painel Executivo", "📋 DRE Gerencial", "🏪 Resultado por Loja", "⚠️ Auditoria DRE"])
+    with tab3:
+        st.markdown('<div class="section-title">Resultados Estratégicos</div>', unsafe_allow_html=True)
+        resultados_estrategicos(df, ultimo)
+        linhas_resultado = df[df["Linha DRE"].apply(lambda x: classe_linha(x) in ["linha-resultado", "linha-bloco", "linha-grupo"])]
+        st.markdown(montar_tabela_html(linhas_resultado, selected_months), unsafe_allow_html=True)
 
-with aba1:
-    st.subheader("Evolução mensal")
-    evol = []
-    for m in selected_months:
-        evol.append({
-            "Mês": m,
-            "Receita Bruta": pegar_valor_linha(dre, "1. RECEITA OPERACIONAL BRUTA", m),
-            "Lucro Bruto": pegar_valor_linha(dre, "5. (=) LUCRO BRUTO", m),
-            "EBITDA": pegar_valor_linha(dre, "7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO", m),
-            "Lucro Líquido": pegar_valor_linha(dre, "11. (=) LUCRO LÍQUIDO", m),
-        })
-    evol_df = pd.DataFrame(evol).set_index("Mês")
-    st.line_chart(evol_df)
-
-with aba2:
-    st.subheader("DRE Gerencial")
-    st.caption("Modelo mantido no formato aprovado: meses em colunas, valores e percentuais lado a lado, com todos os blocos estruturais destacados.")
-    dre_fmt = montar_dre_formatado(dre, selected_months)
-    st.markdown(dataframe_para_html(dre_fmt), unsafe_allow_html=True)
-
-with aba3:
-    st.subheader("Resultado por Loja")
-    if resumo_loja is not None and not resumo_loja.empty:
-        loja_df = resumo_loja[resumo_loja["Mês"].isin(selected_months)].copy() if "Mês" in resumo_loja.columns else resumo_loja.copy()
-        for c in ["Receita", "Despesas", "Resultado Caixa Simplificado"]:
-            if c in loja_df.columns:
-                loja_df[c] = pd.to_numeric(loja_df[c], errors="coerce").fillna(0)
-        st.dataframe(loja_df, use_container_width=True, hide_index=True)
-    else:
-        st.info("Resumo por loja não encontrado no consolidado.")
-
-with aba4:
-    st.subheader("Auditoria de não classificados")
-    st.caption("Esses itens ficam fora dos cálculos principais até serem classificados no plano de contas.")
-    if nao_class is not None and not nao_class.empty:
-        st.dataframe(nao_class, use_container_width=True, hide_index=True)
-    else:
-        st.success("Nenhum item não classificado encontrado.")
+if __name__ == "__main__":
+    main()
