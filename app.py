@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Eirox DRE Online - Versão Final Profissional
+Eirox DRE Online - Versão Premium
 Lê diretamente a aba DADOS_DRE do DRE_Consolidado_Moderno.xlsx.
 Mantém o modelo aprovado do DRE, com meses em colunas, destaques por tipo,
 moeda brasileira e indicadores executivos.
@@ -303,53 +303,176 @@ st.markdown(
     """
 <style>
     :root {
-        --bg:#07111f;
-        --panel:#0b1728;
-        --card:#101c2f;
-        --line:#22324a;
-        --blue:#0aa7ff;
-        --blue-soft:#d8ecff;
+        --bg:#050b14;
+        --bg2:#071527;
+        --panel:#07111f;
+        --card:#0d1b2d;
+        --card2:#12233a;
+        --line:#1f3957;
+        --blue:#00aaff;
+        --blue2:#0077ff;
+        --cyan:#5bd7ff;
         --yellow:#ffd21f;
+        --gold:#f7b500;
         --text:#f8fbff;
-        --muted:#aeb8c8;
-        --green:#21e17b;
+        --muted:#a8b3c4;
+        --green:#24e782;
         --red:#ff5c6c;
+        --white:#ffffff;
     }
-    .stApp {background: radial-gradient(circle at top, #0b1c30 0%, #07111f 35%, #040b14 100%); color:var(--text);}
-    [data-testid="stSidebar"] {background:#050c15; border-right:1px solid #17324c;}
-    .block-container {padding-top: 2.2rem; padding-bottom: 2rem; max-width: 1550px;}
-    h1, h2, h3 {color:var(--text)!important; font-weight:800!important;}
-    .hero {text-align:center; padding: 20px 0 14px 0;}
-    .hero img {max-width: 145px; margin-bottom: 12px;}
-    .hero h1 {font-size: 54px; line-height:1.05; margin: 4px 0 8px 0; letter-spacing:-1px;}
-    .hero p {color:#48baff; font-size:20px; margin:0;}
-    .card-grid {display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:14px; margin:20px 0 10px 0;}
-    .kpi-card {background:linear-gradient(180deg, rgba(21,36,58,0.98), rgba(10,20,35,0.98)); border:1px solid #1e3b5b; border-radius:18px; padding:18px 18px; box-shadow: 0 12px 30px rgba(0,0,0,0.18);}
-    .kpi-title {color:var(--muted); font-size:14px; font-weight:700; text-transform:uppercase; letter-spacing:.6px;}
-    .kpi-value {color:#fff; font-size:28px; font-weight:900; margin-top:8px;}
-    .kpi-sub {color:#66c7ff; font-size:13px; margin-top:4px;}
-    .section-title {font-size:28px; font-weight:900; margin:28px 0 8px 0;}
-    .section-sub {color:var(--muted); margin-bottom:18px;}
-    .dre-scroll {overflow:auto; border:1px solid #173a5a; border-radius:16px; max-height: 680px; background:#081426; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);}
-    table.dre-table {border-collapse:collapse; width:max-content; min-width:100%; font-size:16px;}
-    .dre-table th {position:sticky; top:0; z-index:3; background:#171c27; color:#dce8f7; padding:14px 12px; border-bottom:2px solid #26384f; border-right:1px solid #26384f; text-align:right; white-space:nowrap; font-weight:800;}
-    .dre-table th.col-linha {left:0; z-index:4; text-align:left; min-width:470px;}
-    .dre-table td {padding:13px 12px; border-bottom:1px solid #20304a; border-right:1px solid #20304a; white-space:nowrap;}
-    .dre-table td.col-linha {position:sticky; left:0; z-index:2; min-width:470px; text-align:left;}
-    .num {text-align:right; font-weight:700;}
-    .pct {min-width:85px;}
-    .linha-detalhe td {background:#0b1728; color:#ffffff;}
-    .linha-detalhe td.col-linha {background:#0b1728; color:#ffffff; font-weight:500;}
-    .linha-azul td {background:#d7e9fb; color:#00142a; font-weight:900;}
-    .linha-azul td.col-linha {background:#d7e9fb; color:#00142a; font-weight:900;}
-    .linha-amarela td {background:#ffd21f; color:#06101e; font-weight:1000;}
+
+    .stApp {
+        background:
+            radial-gradient(circle at 20% 0%, rgba(0,170,255,0.15) 0%, transparent 25%),
+            radial-gradient(circle at 80% 10%, rgba(0,119,255,0.12) 0%, transparent 28%),
+            linear-gradient(145deg, #050b14 0%, #071527 45%, #03070d 100%);
+        color:var(--text);
+    }
+
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #040912 0%, #07111f 100%);
+        border-right:1px solid rgba(0,170,255,0.35);
+        box-shadow: 8px 0 30px rgba(0,0,0,0.28);
+    }
+
+    [data-testid="stSidebar"] * {color: #f8fbff;}
+    .block-container {padding-top: 1.4rem; padding-bottom: 2.5rem; max-width: 1580px;}
+    h1, h2, h3 {color:var(--text)!important; font-weight:900!important; letter-spacing:-0.5px;}
+
+    .hero-premium {
+        position: relative;
+        overflow: hidden;
+        text-align:center;
+        margin: 0 auto 22px auto;
+        padding: 34px 30px 30px 30px;
+        border: 1px solid rgba(0,170,255,0.28);
+        border-radius: 26px;
+        background:
+            linear-gradient(135deg, rgba(0,170,255,0.12), rgba(255,255,255,0.02)),
+            linear-gradient(180deg, rgba(12,30,52,0.95), rgba(4,10,18,0.98));
+        box-shadow: 0 24px 70px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.05);
+    }
+    .hero-premium:before {
+        content:"";
+        position:absolute;
+        width: 600px; height: 600px;
+        background: radial-gradient(circle, rgba(0,170,255,0.16), transparent 60%);
+        top:-420px; left:50%; transform:translateX(-50%);
+    }
+    .hero-premium img {max-width: 170px; margin-bottom: 14px; position:relative; z-index:1;}
+    .hero-premium h1 {font-size: 60px; line-height:1.02; margin: 4px 0 12px 0; position:relative; z-index:1;}
+    .hero-premium p {color:#64cfff; font-size:20px; margin:0; position:relative; z-index:1;}
+    .premium-badge {
+        display:inline-flex; gap:8px; align-items:center;
+        padding:8px 14px;
+        border:1px solid rgba(0,170,255,0.4);
+        border-radius:999px;
+        background:rgba(0,170,255,0.08);
+        color:#bfeeff;
+        font-weight:800;
+        font-size:12px;
+        letter-spacing:.5px;
+        text-transform:uppercase;
+        margin-bottom: 12px;
+    }
+
+    .card-grid {display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:16px; margin:20px 0 10px 0;}
+    .kpi-card {
+        position: relative;
+        overflow: hidden;
+        background:
+            linear-gradient(135deg, rgba(0,170,255,0.10), rgba(255,255,255,0.02)),
+            linear-gradient(180deg, rgba(18,35,58,0.98), rgba(8,18,32,0.98));
+        border:1px solid rgba(91,215,255,0.20);
+        border-radius:22px;
+        padding:20px 20px;
+        box-shadow: 0 18px 48px rgba(0,0,0,0.28), inset 0 1px 0 rgba(255,255,255,0.06);
+    }
+    .kpi-card:after {
+        content:"";
+        position:absolute;
+        top:0; left:0; right:0; height:3px;
+        background:linear-gradient(90deg, var(--blue), var(--cyan), transparent);
+    }
+    .kpi-title {color:#9eb4ce; font-size:13px; font-weight:900; text-transform:uppercase; letter-spacing:.7px;}
+    .kpi-value {color:#fff; font-size:29px; font-weight:1000; margin-top:9px; letter-spacing:-0.5px;}
+    .kpi-sub {color:#62cfff; font-size:13px; margin-top:6px; font-weight:700;}
+
+    .section-title {
+        font-size:30px;
+        font-weight:1000;
+        margin:34px 0 8px 0;
+        letter-spacing:-.5px;
+        display:flex;
+        align-items:center;
+        gap:10px;
+    }
+    .section-title:before {
+        content:"";
+        width:7px; height:30px; border-radius:999px;
+        background:linear-gradient(180deg, var(--blue), var(--cyan));
+        box-shadow:0 0 18px rgba(0,170,255,0.7);
+    }
+    .section-sub {color:var(--muted); margin-bottom:18px; font-size:15px;}
+
+    .dre-scroll {
+        overflow:auto;
+        border:1px solid rgba(0,170,255,0.32);
+        border-radius:22px;
+        max-height: 720px;
+        background:rgba(5,13,25,0.88);
+        box-shadow: 0 22px 70px rgba(0,0,0,0.38), inset 0 1px 0 rgba(255,255,255,0.04);
+    }
+    .dre-table {border-collapse:separate; border-spacing:0; width:max-content; min-width:100%; font-size:15px;}
+    .dre-table th {
+        position:sticky; top:0; z-index:5;
+        background:linear-gradient(180deg, #172132 0%, #101827 100%);
+        color:#d9e4f2;
+        padding:15px 14px;
+        border-bottom:1px solid #233b58;
+        border-right:1px solid #23324a;
+        text-align:right;
+        font-weight:900;
+        letter-spacing:.2px;
+    }
+    .dre-table th.col-linha {left:0; z-index:7; text-align:left; min-width:440px;}
+    .dre-table td {
+        padding:14px 14px;
+        border-bottom:1px solid #1d304a;
+        border-right:1px solid #1d304a;
+        white-space:nowrap;
+        background:#081426;
+        color:#f8fbff;
+        font-weight:650;
+    }
+    .dre-table td.num {text-align:right; font-variant-numeric: tabular-nums;}
+    .dre-table td.pct {font-weight:800;}
+    .dre-table td.col-linha {position:sticky; left:0; z-index:3; background:#081426; text-align:left; min-width:440px; font-weight:750;}
+    .dre-table tr:hover td {filter:brightness(1.08);}
+
+    .linha-azul td {background:linear-gradient(90deg, #d9ecff 0%, #cfe6fb 100%); color:#00142a; font-weight:1000;}
+    .linha-azul td.col-linha {background:#d9ecff; color:#00142a; font-weight:1000;}
+    .linha-amarela td {background:linear-gradient(90deg, #ffd21f 0%, #ffc400 100%); color:#06101e; font-weight:1000;}
     .linha-amarela td.col-linha {background:#ffd21f; color:#06101e; font-weight:1000;}
-    .linha-grupo td {background:#eef2f7; color:#0d1827; font-weight:900; font-style:italic;}
-    .linha-grupo td.col-linha {background:#eef2f7; color:#0d1827; font-weight:900; font-style:italic;}
-    .alerta {background:#3b1d2a; color:#ff6976; padding:20px 24px; border-radius:12px; border:1px solid #713146; font-weight:800;}
-    .ok-box {background:#083e25; border:1px solid #127a45; color:#4fff93; padding:14px 16px; border-radius:12px; font-weight:800;}
-    .info-box {background:#0d2b45; border:1px solid #1e5d8c; color:#d8ecff; padding:14px 16px; border-radius:12px; font-weight:700;}
-    @media (max-width: 1100px){.card-grid{grid-template-columns: repeat(2, minmax(0, 1fr));}.hero h1{font-size:40px;}}
+    .linha-grupo td {background:linear-gradient(90deg, #eef3f8 0%, #e4edf7 100%); color:#0d1827; font-weight:1000; font-style:italic;}
+    .linha-grupo td.col-linha {background:#eef3f8; color:#0d1827; font-weight:1000; font-style:italic;}
+
+    .alerta {background:#3b1d2a; color:#ff6976; padding:20px 24px; border-radius:16px; border:1px solid #713146; font-weight:900;}
+    .ok-box {background:#083e25; border:1px solid #127a45; color:#4fff93; padding:14px 16px; border-radius:14px; font-weight:900;}
+    .info-box {background:#0d2b45; border:1px solid #1e5d8c; color:#d8ecff; padding:14px 16px; border-radius:14px; font-weight:800;}
+
+    div[data-testid="stDataFrame"] {border-radius:18px; overflow:hidden; border:1px solid rgba(0,170,255,0.25);}
+    .stButton>button {
+        border-radius:14px;
+        border:1px solid rgba(91,215,255,0.35);
+        background:linear-gradient(135deg, #10233b, #0c1b2e);
+        color:#fff;
+        font-weight:900;
+        height:48px;
+    }
+    .stButton>button:hover {border-color:#5bd7ff; box-shadow:0 0 18px rgba(0,170,255,0.25);}
+
+    @media (max-width: 1100px){.card-grid{grid-template-columns: repeat(2, minmax(0, 1fr));}.hero-premium h1{font-size:40px;}.dre-table th.col-linha,.dre-table td.col-linha{min-width:330px;}}
 </style>
 """,
     unsafe_allow_html=True,
@@ -385,10 +508,11 @@ else:
 
 st.markdown(
     f"""
-<div class='hero'>
+<div class='hero-premium'>
     {logo_html}
+    <div class='premium-badge'>Premium Financial Intelligence</div>
     <h1>DRE Empresa Online</h1>
-    <p>Dashboard financeiro gerencial • DRE no formato aprovado • Meses fechados do ano atual</p>
+    <p>Dashboard financeiro executivo • Visual Premium Eirox • DRE no formato aprovado • Meses fechados do ano atual</p>
 </div>
 """,
     unsafe_allow_html=True,
@@ -432,6 +556,18 @@ if not selected_months:
     st.stop()
 selected_months = sorted(selected_months, key=mes_key)
 ultimo_mes = selected_months[-1]
+
+# =========================================================
+# STATUS EXECUTIVO PREMIUM
+# =========================================================
+st.markdown(
+    f"""
+<div class='info-box'>
+    <b>Base ativa:</b> DADOS_DRE • <b>Meses selecionados:</b> {', '.join(selected_months)} • <b>Último mês analisado:</b> {ultimo_mes}
+</div>
+""",
+    unsafe_allow_html=True,
+)
 
 # =========================================================
 # KPIs EXECUTIVOS
