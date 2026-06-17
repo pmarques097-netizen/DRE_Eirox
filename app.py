@@ -42,8 +42,12 @@ POSSIVEIS_BASES = [
 POSSIVEIS_LOGOS = [
     APP_DIR / "assets" / "logo_eirox.png",
     APP_DIR / "assets" / "logo eirox(3).png",
+    APP_DIR / "assets" / "logo eirox.png",
     APP_DIR / "logo_eirox.png",
+    APP_DIR / "logo eirox(3).png",
     Path.cwd() / "assets" / "logo_eirox.png",
+    Path.cwd() / "assets" / "logo eirox(3).png",
+    Path.cwd() / "logo_eirox.png",
 ]
 
 MESES_ORDEM = {
@@ -109,6 +113,22 @@ table.eirox-table tr.agrupador td:first-child{background:#1b2534!important;}
 .ok-box{background:rgba(50,232,117,.12); border:1px solid rgba(50,232,117,.35); padding:16px 18px; border-radius:18px; color:#baf7cb; font-weight:800;}
 .footer{color:#6d7d90; font-size:.78rem; text-align:center; margin-top:30px; padding-top:18px; border-top:1px solid rgba(255,255,255,.08);}
 [data-testid="stMetric"]{background:linear-gradient(180deg,#10223a,#091728); padding:16px; border-radius:18px; border:1px solid rgba(0,168,255,.22);}
+
+/* Menu lateral fixo em radio, sem dropdown */
+div[role="radiogroup"] label{
+    background:linear-gradient(90deg,rgba(0,168,255,.12),rgba(255,255,255,.03));
+    border:1px solid rgba(0,168,255,.20);
+    border-radius:14px;
+    padding:10px 12px!important;
+    margin:7px 0!important;
+    transition:all .18s ease-in-out;
+}
+div[role="radiogroup"] label:hover{
+    border-color:rgba(0,168,255,.55);
+    background:linear-gradient(90deg,rgba(0,168,255,.25),rgba(255,255,255,.05));
+}
+div[role="radiogroup"] label[data-baseweb="radio"]{width:100%;}
+
 </style>
 """,
     unsafe_allow_html=True,
@@ -338,7 +358,7 @@ logo_path = encontrar_arquivo(POSSIVEIS_LOGOS)
 # Sidebar premium
 if logo_path:
     b64 = img_base64(logo_path)
-    st.sidebar.markdown(f"<div class='sidebar-logo'><img src='data:image/png;base64,{b64}' width='190'></div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"<div class='sidebar-logo'><img src='data:image/png;base64,{b64}' width='210'></div>", unsafe_allow_html=True)
 else:
     st.sidebar.markdown("<div class='sidebar-title'>EIROX</div>", unsafe_allow_html=True)
 
@@ -346,9 +366,16 @@ st.sidebar.markdown("<div class='sidebar-title'>DRE Financeiro Online</div>", un
 st.sidebar.markdown("<div class='sidebar-subtitle'>Enterprise Premium</div>", unsafe_allow_html=True)
 
 st.sidebar.markdown("<div class='sidebar-section'>Navegação</div>", unsafe_allow_html=True)
-pagina = st.sidebar.selectbox(
-    "Página",
-    ["📊 Painel CEO", "📑 DRE Gerencial", "📈 Evolução Mensal", "🏪 Resultado por Loja", "⚖️ Resultados Estratégicos", "⚠️ Auditoria DRE"],
+pagina = st.sidebar.radio(
+    "",
+    [
+        "📊 Painel CEO",
+        "📑 DRE Gerencial",
+        "📈 Evolução Mensal",
+        "🏪 Resultado por Loja",
+        "⚖️ Resultados Estratégicos",
+        "⚠️ Auditoria DRE",
+    ],
     label_visibility="collapsed",
 )
 
@@ -376,9 +403,6 @@ if not meses_sel:
     st.warning("Selecione pelo menos um mês.")
     st.stop()
 
-st.sidebar.markdown("<div class='sidebar-section'>Base</div>", unsafe_allow_html=True)
-st.sidebar.caption(f"Arquivo: {base_path.name}")
-st.sidebar.caption(f"Meses disponíveis: {all_months[0]} a {all_months[-1]}" if all_months else "Sem meses")
 st.sidebar.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS<br>Versão Enterprise Premium</div>", unsafe_allow_html=True)
 
 ultimo_mes = meses_sel[-1]
