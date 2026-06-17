@@ -58,10 +58,8 @@ MESES_ORDEM = {
 
 
 # =========================================================
-# USUÁRIOS E SENHAS
+# CONTROLE DE ACESSO
 # =========================================================
-# Altere as senhas abaixo quando desejar.
-# Perfil "admin" pode acessar tudo; perfil "visualizacao" apenas visualiza o painel.
 USUARIOS = {
     "paulomarques": {"senha": "031730", "perfil": "admin", "nome": "Paulo Marques"},
     "admin": {"senha": "031730", "perfil": "admin", "nome": "Administrador"},
@@ -411,12 +409,6 @@ def tela_login() -> bool:
         else:
             st.error("Usuário ou senha inválidos.")
 
-    st.markdown(
-        """
-        <div class='user-chip'>Usuários autorizados: paulomarques / admin / ubiratan / vanderlei</div>
-        """,
-        unsafe_allow_html=True,
-    )
     st.stop()
 
 
@@ -424,8 +416,7 @@ def botao_logout_sidebar():
     nome = st.session_state.get("nome_usuario", "Usuário")
     perfil = st.session_state.get("perfil", "")
     st.sidebar.markdown("<div class='sidebar-section'>Acesso</div>", unsafe_allow_html=True)
-    st.sidebar.caption(f"Usuário: {nome}")
-    st.sidebar.caption(f"Perfil: {perfil}")
+    st.sidebar.caption(f"Bem-vindo, {nome}")
     if st.sidebar.button("Sair", use_container_width=True):
         for k in ["autenticado", "usuario", "nome_usuario", "perfil"]:
             st.session_state.pop(k, None)
