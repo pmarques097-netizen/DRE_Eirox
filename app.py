@@ -141,10 +141,12 @@ def carregar_workbook_from_path(path_str: str):
 
 
 def escolher_arquivo():
-    st.sidebar.markdown("### 📁 Base de dados")
-    uploaded = st.sidebar.file_uploader("Enviar DRE_Consolidado_Moderno.xlsx", type=["xlsx"])
-    if uploaded is not None:
-        return carregar_workbook_from_bytes(uploaded.getvalue()), "Arquivo enviado"
+    """Carrega a base automaticamente do banco/arquivo padrão do projeto.
+    Não exibe upload na tela.
+    Prioridade:
+    1) data/DRE_Consolidado_Moderno.xlsx
+    2) DRE_Consolidado_Moderno.xlsx na raiz do projeto
+    """
     if DATA_FILE.exists():
         return carregar_workbook_from_path(str(DATA_FILE)), str(DATA_FILE)
     if DATA_FILE_ROOT.exists():
@@ -366,7 +368,7 @@ def plot_line(df, title, y_title="Valor"):
 sheets, fonte = escolher_arquivo()
 
 if not sheets:
-    st.error("Nenhum arquivo de dados foi encontrado. Coloque DRE_Consolidado_Moderno.xlsx na pasta data/ ou envie pelo upload lateral.")
+    st.error("Nenhum arquivo de dados foi encontrado. Coloque DRE_Consolidado_Moderno.xlsx na pasta data/ ou na raiz do projeto.")
     st.stop()
 
 dre = obter_df(sheets, "DRE")
