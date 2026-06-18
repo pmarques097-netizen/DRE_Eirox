@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO DINÂMICA TOTAL - DRE EIROX ENTERPRISE PREMIUM v1.6
+VERSÃO DINÂMICA TOTAL - DRE EIROX ENTERPRISE PREMIUM v1.5
 
 Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as pastas:
 - CONTAS A PAGAR - DRE
@@ -9,8 +9,7 @@ Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as
 - POSIÇÃO DE ESTOQUE
 - VENDA POR PAGAMENTO
 
-Esta versão NÃO usa fallback silencioso para consolidado quando as pastas não forem encontradas.
-Ela mostra exatamente qual pasta está faltando e atualiza o consolidado automaticamente quando recalcula.
+O arquivo DRE_Consolidado_Moderno.xlsx é usado apenas como fallback quando as pastas não forem encontradas.
 
 Como executar:
     streamlit run app.py
@@ -19,6 +18,7 @@ Como executar:
 from __future__ import annotations
 
 import base64
+import io
 import re
 import unicodedata
 from datetime import datetime
@@ -308,36 +308,17 @@ def meses_fechados_ano_atual(meses: list[str]) -> list[str]:
     return [m for m in meses if mes_sort_key(m)[0] == ano_base and mes_sort_key(m)[1] < 99]
 
 def localizar_pasta(nome_com_acento: str, nome_sem_acento: str) -> Path | None:
-    """Localiza pastas tanto na raiz quanto dentro de /data.
-
-    No Streamlit Cloud, é comum publicar as pastas dentro de data/.
-    Na execução local, normalmente elas ficam na raiz C:\\Users\\Comercial\\Desktop\\Dre.
-    Esta função cobre os dois cenários.
-    """
     candidatos = [
         APP_DIR / nome_com_acento,
         APP_DIR / nome_sem_acento,
-        APP_DIR / "data" / nome_com_acento,
-        APP_DIR / "data" / nome_sem_acento,
         APP_DIR.parent / nome_com_acento,
         APP_DIR.parent / nome_sem_acento,
-        APP_DIR.parent / "data" / nome_com_acento,
-        APP_DIR.parent / "data" / nome_sem_acento,
         Path.cwd() / nome_com_acento,
         Path.cwd() / nome_sem_acento,
-        Path.cwd() / "data" / nome_com_acento,
-        Path.cwd() / "data" / nome_sem_acento,
         Path.home() / "Desktop" / "Dre" / nome_com_acento,
         Path.home() / "Desktop" / "Dre" / nome_sem_acento,
-        Path.home() / "Desktop" / "Dre" / "data" / nome_com_acento,
-        Path.home() / "Desktop" / "Dre" / "data" / nome_sem_acento,
     ]
-    vistos = set()
     for p in candidatos:
-        p = p.resolve() if p.exists() else p
-        if str(p) in vistos:
-            continue
-        vistos.add(str(p))
         if p.exists() and p.is_dir():
             return p
     return None
@@ -563,12 +544,7 @@ def build_dynamic_dre() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
     }
 
     if not all(status_pastas.values()):
-        faltantes = [nome for nome, pasta in status_pastas.items() if not pasta]
-        detalhe = " | ".join(faltantes)
-        raise FileNotFoundError(
-            "Pastas de base não encontradas no ambiente atual: " + detalhe +
-            ". Coloque as pastas na raiz do projeto ou dentro da pasta data/."
-        )
+        raise FileNotFoundError("Pastas de base não encontradas. Usando fallback do consolidado.")
 
     plano = carregar_plano_contas(pasta_plano)
     vendas = carregar_vendas(pasta_venda)
@@ -707,10 +683,6 @@ def build_dynamic_dre() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
 
     checks = pd.DataFrame([
         {"Checagem": "Modo de leitura", "Valor": "DINÂMICO PELAS PASTAS"},
-        {"Checagem": "Pasta vendas", "Valor": str(pasta_venda)},
-        {"Checagem": "Pasta contas", "Valor": str(pasta_contas)},
-        {"Checagem": "Pasta estoque", "Valor": str(pasta_estoque)},
-        {"Checagem": "Pasta plano", "Valor": str(pasta_plano)},
         {"Checagem": "Arquivos de vendas lidos", "Valor": len(arquivos_excel(pasta_venda))},
         {"Checagem": "Arquivos de contas lidos", "Valor": len(arquivos_excel(pasta_contas))},
         {"Checagem": "Arquivos de estoque lidos", "Valor": len(arquivos_excel(pasta_estoque))},
@@ -733,33 +705,12 @@ def carregar_fallback_consolidado() -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
     checks = pd.DataFrame([{"Checagem": "Modo de leitura", "Valor": "FALLBACK CONSOLIDADO"}, {"Checagem": "Arquivo", "Valor": str(base_path)}])
     return dados, resumo_loja, nao, checks, {}
 
-def salvar_consolidado_dinamico(dados: pd.DataFrame, resumo_loja: pd.DataFrame, nao: pd.DataFrame, checks: pd.DataFrame) -> None:
-    """Gera/atualiza o DRE_Consolidado_Moderno.xlsx a partir das pastas.
-
-    Importante: no Streamlit Cloud o arquivo é atualizado no ambiente em execução.
-    Para persistir no GitHub, ainda é necessário subir os arquivos de base atualizados.
-    """
-    destinos = [APP_DIR / "data" / "DRE_Consolidado_Moderno.xlsx", APP_DIR / "DRE_Consolidado_Moderno.xlsx"]
-    for destino in destinos:
-        try:
-            destino.parent.mkdir(parents=True, exist_ok=True)
-            with pd.ExcelWriter(destino, engine="openpyxl") as writer:
-                dados.to_excel(writer, sheet_name="DADOS_DRE", index=False)
-                resumo_loja.to_excel(writer, sheet_name="RESUMO_LOJA", index=False)
-                nao.to_excel(writer, sheet_name="NAO_CLASSIFICADOS", index=False)
-                checks.to_excel(writer, sheet_name="CHECKS", index=False)
-            return
-        except Exception:
-            continue
-
 def carregar_base_dre():
     try:
         dados, resumo_loja, nao, checks, status = build_dynamic_dre()
-        salvar_consolidado_dinamico(dados, resumo_loja, nao, checks)
     except Exception as e:
-        # Não usar fallback silencioso: se o online não encontrar as pastas, precisa mostrar o erro.
-        # Isso evita continuar exibindo DRE_Consolidado_Moderno.xlsx antigo sem perceber.
-        raise RuntimeError(str(e))
+        dados, resumo_loja, nao, checks, status = carregar_fallback_consolidado()
+        checks = pd.concat([checks, pd.DataFrame([{"Checagem": "Aviso", "Valor": f"Fallback usado: {e}"}])], ignore_index=True)
 
     dados.columns = [str(c).strip() for c in dados.columns]
     dados["Valor"] = dados["Valor"].apply(parse_float)
@@ -839,6 +790,164 @@ def dre_pivot_html(dados: pd.DataFrame, meses: list[str], secao: str | None = No
 def serie_linha(dados: pd.DataFrame, linha_contains: str, meses: list[str]) -> pd.DataFrame:
     return pd.DataFrame([{"Mês": m, "Valor": valor_linha(dados, linha_contains, m)} for m in meses])
 
+
+# =========================================================
+# MELHORIAS PREMIUM - PAINEL CEO / FARMACÊUTICO / PDF
+# =========================================================
+def valor_mes_linha(dados: pd.DataFrame, busca: str, mes: str) -> float:
+    return valor_linha(dados, busca, mes)
+
+
+def delta_percentual_linha(dados: pd.DataFrame, busca: str, meses: list[str]) -> float | None:
+    if len(meses) < 2:
+        return None
+    atual = valor_mes_linha(dados, busca, meses[-1])
+    anterior = valor_mes_linha(dados, busca, meses[-2])
+    if anterior == 0:
+        return None
+    return (atual - anterior) / abs(anterior)
+
+
+def seta_tendencia(delta: float | None) -> str:
+    if delta is None:
+        return "▬ 0,00%"
+    if delta > 0:
+        return f"▲ {pct(delta)}"
+    if delta < 0:
+        return f"▼ {pct(abs(delta))}"
+    return "▬ 0,00%"
+
+
+def classe_delta(delta: float | None) -> str:
+    if delta is None or delta == 0:
+        return "delta-neutral"
+    return "delta-pos" if delta > 0 else "delta-neg"
+
+
+def make_exec_card(titulo: str, valor: str, subtitulo: str = "", destaque: bool = False):
+    borda = "rgba(255,210,31,.48)" if destaque else "rgba(0,168,255,.30)"
+    fundo = "linear-gradient(180deg,#1e2630,#091728)" if destaque else "linear-gradient(180deg,#10223a,#091728)"
+    st.markdown(
+        f"""
+        <div class="kpi-card" style="border-color:{borda}; background:{fundo};">
+            <div class="label">{titulo}</div>
+            <div class="value">{valor}</div>
+            <div class="delta">{subtitulo}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def make_tendencia_card(nome: str, delta: float | None):
+    cls = classe_delta(delta)
+    st.markdown(
+        f"""
+        <div class="kpi-card" style="min-height:105px;">
+            <div class="label">{nome}</div>
+            <div class="value {cls}" style="font-size:1.75rem;">{seta_tendencia(delta)}</div>
+            <div class="delta">comparativo mensal</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def semaforo(label: str, nivel: str, detalhe: str):
+    cores = {
+        "Saudável": ("🟢", "#32e875"),
+        "Atenção": ("🟡", "#ffd21f"),
+        "Crítico": ("🔴", "#ff5470"),
+    }
+    icone, cor = cores.get(nivel, ("⚪", "#9aa7b8"))
+    st.markdown(
+        f"""
+        <div class="kpi-card" style="min-height:116px; border-color:{cor};">
+            <div class="label">{label}</div>
+            <div class="value" style="font-size:1.35rem;color:{cor};">{icone} {nivel}</div>
+            <div class="delta">{detalhe}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path | None = None) -> bytes | None:
+    try:
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import cm
+        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    except Exception:
+        return None
+
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=1.0*cm, bottomMargin=1.0*cm)
+    styles = getSampleStyleSheet()
+    elementos = []
+
+    if logo_path and logo_path.exists():
+        try:
+            img = Image(str(logo_path), width=4.2*cm, height=1.3*cm)
+            elementos.append(img)
+            elementos.append(Spacer(1, 0.2*cm))
+        except Exception:
+            pass
+
+    ultimo = meses[-1]
+    elementos.append(Paragraph("DRE Empresa Online - Relatório Executivo", styles["Title"]))
+    elementos.append(Paragraph(f"Período: {meses[0]} a {meses[-1]} | Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
+    elementos.append(Spacer(1, 0.4*cm))
+
+    linhas = [
+        ["Indicador", "Valor", "% Receita"],
+        ["Receita Total", brl(valor_linha(dados, "RECEITA OPERACIONAL BRUTA", ultimo)), pct(pct_linha(dados, "RECEITA OPERACIONAL BRUTA", ultimo))],
+        ["Lucro Bruto", brl(valor_linha(dados, "LUCRO BRUTO", ultimo)), pct(pct_linha(dados, "LUCRO BRUTO", ultimo))],
+        ["EBITDA", brl(valor_linha(dados, "EBITDA", ultimo)), pct(pct_linha(dados, "EBITDA", ultimo))],
+        ["Lucro Líquido", brl(valor_linha(dados, "LUCRO LÍQUIDO", ultimo)), pct(pct_linha(dados, "LUCRO LÍQUIDO", ultimo))],
+        ["Posição Final Caixa", brl(valor_linha(dados, "POSIÇÃO FINAL", ultimo)), pct(pct_linha(dados, "POSIÇÃO FINAL", ultimo))],
+    ]
+    tabela = Table(linhas, colWidths=[8*cm, 4*cm, 3*cm])
+    tabela.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0B2B45")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#F4F8FC")),
+        ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#D5E2EF")),
+        ("FONTNAME", (0,1), (-1,-1), "Helvetica"),
+        ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF5FB")]),
+    ]))
+    elementos.append(tabela)
+    elementos.append(Spacer(1, 0.5*cm))
+
+    elementos.append(Paragraph("Resumo Farmacêutico", styles["Heading2"]))
+    receita = valor_linha(dados, "RECEITA OPERACIONAL BRUTA", ultimo)
+    estoque = valor_linha(dados, "ESTOQUE A CUSTO", ultimo)
+    cmv = valor_linha(dados, "CUSTOS DAS VENDAS", ultimo)
+    despesas_op = valor_linha(dados, "DESPESAS OPERACIONAIS", ultimo)
+    farmacia = [
+        ["Indicador", "Resultado"],
+        ["Estoque / Receita", f"{(estoque/receita):.2f}x".replace(".", ",") if receita else "0,00x"],
+        ["Dias de Estoque", f"{(estoque/cmv*30):.1f} dias".replace(".", ",") if cmv else "0,0 dias"],
+        ["Capital de Giro", brl(estoque - valor_linha(dados, "POSIÇÃO FINAL", ultimo))],
+        ["CMV %", pct(cmv/receita if receita else 0)],
+        ["Despesa Operacional %", pct(despesas_op/receita if receita else 0)],
+        ["EBITDA %", pct(pct_linha(dados, "EBITDA", ultimo))],
+    ]
+    tabela2 = Table(farmacia, colWidths=[8*cm, 7*cm])
+    tabela2.setStyle(TableStyle([
+        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0B2B45")),
+        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+        ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#D5E2EF")),
+        ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+    ]))
+    elementos.append(tabela2)
+    doc.build(elementos)
+    return buffer.getvalue()
+
 # =========================================================
 # LOGIN
 # =========================================================
@@ -900,10 +1009,6 @@ else:
 st.sidebar.markdown("<div class='sidebar-title'>DRE Financeiro Online</div>", unsafe_allow_html=True)
 st.sidebar.markdown("<div class='sidebar-subtitle'>Enterprise Premium</div>", unsafe_allow_html=True)
 botao_logout_sidebar()
-
-st.sidebar.markdown("<div class='sidebar-section'>Atualização</div>", unsafe_allow_html=True)
-if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
-    st.rerun()
 
 st.sidebar.markdown("<div class='sidebar-section'>Navegação</div>", unsafe_allow_html=True)
 pagina = st.sidebar.radio(
@@ -977,18 +1082,90 @@ st.markdown("<br>", unsafe_allow_html=True)
 # PÁGINAS
 # =========================================================
 if pagina == "📊 Painel CEO":
-    st.markdown("<div class='section-title'>📊 Painel CEO</div>", unsafe_allow_html=True)
-    st.markdown("<div class='section-caption'>Visão executiva do último mês filtrado com comparação mensal.</div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns(3)
+    st.markdown("<div class='section-title'>📊 Painel CEO Premium</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-caption'>Visão executiva com cards, tendências mensais, semáforo financeiro, indicadores farmacêuticos e exportação PDF.</div>", unsafe_allow_html=True)
+
+    receita_total = valor_linha(dados, "RECEITA OPERACIONAL BRUTA", ultimo_mes)
+    lucro_bruto = valor_linha(dados, "LUCRO BRUTO", ultimo_mes)
+    ebitda = valor_linha(dados, "EBITDA", ultimo_mes)
+    lucro_liquido = valor_linha(dados, "LUCRO LÍQUIDO", ultimo_mes)
+    posicao_final = valor_linha(dados, "POSIÇÃO FINAL", ultimo_mes)
+    margem_ebitda = pct_linha(dados, "EBITDA", ultimo_mes)
+    margem_liquida = pct_linha(dados, "LUCRO LÍQUIDO", ultimo_mes)
+
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
-        make_kpi("Margem Bruta", pct(pct_linha(dados, "LUCRO BRUTO", ultimo_mes)))
+        make_exec_card("Receita Total", brl(receita_total), f"{ultimo_mes}")
     with c2:
-        make_kpi("Margem EBITDA", pct(pct_linha(dados, "EBITDA", ultimo_mes)))
+        make_exec_card("Lucro Bruto", brl(lucro_bruto), pct(pct_linha(dados, "LUCRO BRUTO", ultimo_mes)))
     with c3:
-        make_kpi("Margem Líquida", pct(pct_linha(dados, "LUCRO LÍQUIDO", ultimo_mes)))
-    st.markdown("<div class='section-title'>Evolução dos principais resultados</div>", unsafe_allow_html=True)
+        make_exec_card("EBITDA", brl(ebitda), pct(margem_ebitda), destaque=True)
+    with c4:
+        make_exec_card("Lucro Líquido", brl(lucro_liquido), pct(margem_liquida), destaque=True)
+
+    c5, c6, c7 = st.columns(3)
+    with c5:
+        make_exec_card("Posição Final Caixa", brl(posicao_final), pct(pct_linha(dados, "POSIÇÃO FINAL", ultimo_mes)), destaque=True)
+    with c6:
+        make_exec_card("Margem EBITDA", pct(margem_ebitda), "EBITDA / Receita")
+    with c7:
+        make_exec_card("Margem Líquida", pct(margem_liquida), "Lucro Líquido / Receita")
+
+    st.markdown("<div class='section-title'>📈 Comparativo Mensal</div>", unsafe_allow_html=True)
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        make_tendencia_card("Receita", delta_percentual_linha(dados, "RECEITA OPERACIONAL BRUTA", meses_sel))
+    with t2:
+        make_tendencia_card("Lucro", delta_percentual_linha(dados, "LUCRO LÍQUIDO", meses_sel))
+    with t3:
+        make_tendencia_card("EBITDA", delta_percentual_linha(dados, "EBITDA", meses_sel))
+
+    st.markdown("<div class='section-title'>🚦 Semáforo Financeiro</div>", unsafe_allow_html=True)
+    receita = receita_total or 0
+    estoque = valor_linha(dados, "ESTOQUE A CUSTO", ultimo_mes)
+    despesas_op = valor_linha(dados, "DESPESAS OPERACIONAIS", ultimo_mes)
+    margem = margem_ebitda
+    caixa_pct = (posicao_final / receita) if receita else 0
+    estoque_receita = (estoque / receita) if receita else 0
+    despesas_pct = (despesas_op / receita) if receita else 0
+
+    status_margem = "Saudável" if margem >= 0.10 else ("Atenção" if margem >= 0.05 else "Crítico")
+    status_caixa = "Saudável" if caixa_pct >= 0.05 else ("Atenção" if caixa_pct >= 0 else "Crítico")
+    status_estoque = "Saudável" if estoque_receita <= 2.0 else ("Atenção" if estoque_receita <= 3.0 else "Crítico")
+    status_despesas = "Saudável" if despesas_pct <= 0.25 else ("Atenção" if despesas_pct <= 0.35 else "Crítico")
+
+    s1, s2, s3, s4 = st.columns(4)
+    with s1:
+        semaforo("Margem", status_margem, f"EBITDA: {pct(margem)}")
+    with s2:
+        semaforo("Caixa", status_caixa, f"Posição Final: {pct(caixa_pct)}")
+    with s3:
+        semaforo("Estoque", status_estoque, f"Estoque/Receita: {estoque_receita:.2f}x".replace(".", ","))
+    with s4:
+        semaforo("Despesas", status_despesas, f"Despesas Op.: {pct(despesas_pct)}")
+
+    st.markdown("<div class='section-title'>💊 Dashboard Farmacêutico</div>", unsafe_allow_html=True)
+    cmv = valor_linha(dados, "CUSTOS DAS VENDAS", ultimo_mes)
+    dias_estoque = (estoque / cmv * 30) if cmv else 0
+    capital_giro = estoque - posicao_final
+    f1, f2, f3 = st.columns(3)
+    with f1:
+        make_exec_card("Estoque / Receita", f"{estoque_receita:.2f}x".replace(".", ","), "capital imobilizado em estoque")
+    with f2:
+        make_exec_card("Dias de Estoque", f"{dias_estoque:.1f} dias".replace(".", ","), "estoque / CMV x 30")
+    with f3:
+        make_exec_card("Capital de Giro", brl(capital_giro), "estoque menos posição final")
+    f4, f5, f6 = st.columns(3)
+    with f4:
+        make_exec_card("CMV %", pct(cmv/receita if receita else 0), "custo sobre receita")
+    with f5:
+        make_exec_card("Despesa Operacional %", pct(despesas_pct), "despesas sobre receita")
+    with f6:
+        make_exec_card("EBITDA %", pct(margem), "resultado operacional")
+
+    st.markdown("<div class='section-title'>📊 Evolução dos principais resultados</div>", unsafe_allow_html=True)
     evol = []
-    for nome, busca in [("Receita Bruta", "RECEITA OPERACIONAL BRUTA"), ("Lucro Bruto", "LUCRO BRUTO"), ("EBITDA", "EBITDA"), ("Lucro Líquido", "LUCRO LÍQUIDO")]:
+    for nome, busca in [("Receita Bruta", "RECEITA OPERACIONAL BRUTA"), ("Lucro Bruto", "LUCRO BRUTO"), ("EBITDA", "EBITDA"), ("Lucro Líquido", "LUCRO LÍQUIDO"), ("Posição Final", "POSIÇÃO FINAL")]:
         tmp = serie_linha(dados, busca, meses_sel)
         tmp["Indicador"] = nome
         evol.append(tmp)
@@ -996,6 +1173,19 @@ if pagina == "📊 Painel CEO":
     fig = px.line(evol_df, x="Mês", y="Valor", color="Indicador", markers=True, template="plotly_dark")
     fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=430, margin=dict(l=20, r=20, t=30, b=20))
     st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("<div class='section-title'>📥 Exportação Executiva</div>", unsafe_allow_html=True)
+    pdf_bytes = gerar_pdf_executivo(dados, meses_sel, logo_path)
+    if pdf_bytes:
+        st.download_button(
+            "📥 Exportar Relatório Executivo PDF",
+            data=pdf_bytes,
+            file_name=f"Relatorio_Executivo_DRE_Eirox_{ultimo_mes.replace('/', '_')}.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+        )
+    else:
+        st.warning("Para exportar em PDF no ambiente online, adicione reportlab ao requirements.txt.")
 
 elif pagina == "📑 DRE Gerencial":
     st.markdown("<div class='section-title'>📑 DRE Gerencial</div>", unsafe_allow_html=True)
@@ -1080,4 +1270,4 @@ elif pagina == "⚠️ Auditoria DRE":
             show["Valor"] = show["Valor"].apply(brl)
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • v1.6 sem fallback silencioso</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas</div>", unsafe_allow_html=True)
