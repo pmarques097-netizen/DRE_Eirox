@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO CONGELADA - DRE EIROX ENTERPRISE PREMIUM v1.0
+VERSÃO AJUSTADA - DRE EIROX ENTERPRISE PREMIUM v1.1 DRE COMPLETO
 Versão baseada na base congelada DRE_Consolidado_Moderno.xlsx.
 Fonte principal: aba DADOS_DRE.
 
@@ -239,6 +239,7 @@ def parse_float(v) -> float:
         return 0.0
 
 
+@st.cache_data(show_spinner=False)
 def carregar_base(caminho: str):
     path = Path(caminho)
     sheets = pd.ExcelFile(path).sheet_names
@@ -369,364 +370,6 @@ def serie_linha(dados: pd.DataFrame, linha_contains: str, meses: list[str]) -> p
     return pd.DataFrame(rows)
 
 
-
-# =========================================================
-# ATUALIZAÇÃO DINÂMICA A PARTIR DAS PASTAS
-# =========================================================
-def normalizar_texto(txt) -> str:
-    if pd.isna(txt):
-        return ""
-    s = str(txt).strip().upper()
-    import unicodedata
-    s = unicodedata.normalize("NFKD", s).encode("ASCII", "ignore").decode("ASCII")
-    s = re.sub(r"[^A-Z0-9]+", " ", s)
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def col_por_opcoes(df: pd.DataFrame, opcoes: list[str]) -> str | None:
-    mapa = {normalizar_texto(c): c for c in df.columns}
-    for opcao in opcoes:
-        n = normalizar_texto(opcao)
-        if n in mapa:
-            return mapa[n]
-    # contém
-    for opcao in opcoes:
-        n = normalizar_texto(opcao)
-        for nc, original in mapa.items():
-            if n in nc or nc in n:
-                return original
-    return None
-
-
-def localizar_pasta_base_dre() -> Path | None:
-    candidatos = [APP_DIR, APP_DIR.parent, Path.cwd(), Path.cwd().parent, Path.home() / "Desktop" / "Dre"]
-    obrigatorias = ["CONTAS A PAGAR - DRE", "PLANO DE CONTAS - LEGENDA", "POSIÇÃO DE ESTOQUE", "VENDA POR PAGAMENTO"]
-    for base in candidatos:
-        if all((base / p).exists() for p in obrigatorias):
-            return base
-    return None
-
-
-def arquivos_excel(pasta: Path) -> list[Path]:
-    if not pasta.exists():
-        return []
-    arqs = list(pasta.rglob("*.xlsx")) + list(pasta.rglob("*.xls"))
-    return [a for a in arqs if not a.name.startswith("~$")]
-
-
-def mes_por_data_ou_nome(valor=None, arquivo: Path | None = None) -> str:
-    if valor is not None and not pd.isna(valor):
-        try:
-            dt = pd.to_datetime(valor, errors="coerce", dayfirst=True)
-            if not pd.isna(dt):
-                mapa = {1:"jan",2:"fev",3:"mar",4:"abr",5:"mai",6:"jun",7:"jul",8:"ago",9:"set",10:"out",11:"nov",12:"dez"}
-                return f"{mapa[int(dt.month)]}/{str(int(dt.year))[-2:]}"
-        except Exception:
-            pass
-        s = str(valor).strip().lower()
-        m = re.search(r"(20\d{2})[-/](\d{1,2})", s)
-        if m:
-            mapa = {1:"jan",2:"fev",3:"mar",4:"abr",5:"mai",6:"jun",7:"jul",8:"ago",9:"set",10:"out",11:"nov",12:"dez"}
-            return f"{mapa.get(int(m.group(2)), 'jan')}/{m.group(1)[-2:]}"
-        m = re.search(r"(jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)[a-z]*/?(\d{2,4})", s)
-        if m:
-            ano = m.group(2)[-2:]
-            return f"{m.group(1)[:3]}/{ano}"
-    if arquivo is not None:
-        nome = normalizar_texto(arquivo.stem)
-        mapa_nome = {
-            "JANEIRO":"jan", "JAN":"jan", "FEVEREIRO":"fev", "FEV":"fev", "MARCO":"mar", "MAR":"mar",
-            "ABRIL":"abr", "ABR":"abr", "MAIO":"mai", "MAI":"mai", "JUNHO":"jun", "JUN":"jun",
-            "JULHO":"jul", "JUL":"jul", "AGOSTO":"ago", "AGO":"ago", "SETEMBRO":"set", "SET":"set",
-            "OUTUBRO":"out", "OUT":"out", "NOVEMBRO":"nov", "NOV":"nov", "DEZEMBRO":"dez", "DEZ":"dez",
-        }
-        ano_match = re.search(r"20(\d{2})", nome)
-        ano2 = ano_match.group(1) if ano_match else "26"
-        for palavra, mes in mapa_nome.items():
-            if palavra in nome:
-                return f"{mes}/{ano2}"
-    return "Sem mês"
-
-
-def ler_planos_dinamico(base: Path) -> pd.DataFrame:
-    pasta = base / "PLANO DE CONTAS - LEGENDA"
-    frames = []
-    for arq in arquivos_excel(pasta):
-        try:
-            df = pd.read_excel(arq)
-            df.columns = [str(c).strip() for c in df.columns]
-            plano_col = col_por_opcoes(df, ["Plano de contas", "Plano de Contas", "Conta do Sistema (Plano de Contas)"])
-            destino_col = col_por_opcoes(df, ["Destino na DRE Estruturada", "Destino DRE", "Destino DRE Legenda"])
-            grupo_col = col_por_opcoes(df, ["Grupo", "Grupo Legenda"])
-            sub_col = col_por_opcoes(df, ["Subgrupo", "Subgrupo Legenda"])
-            if plano_col and destino_col:
-                out = pd.DataFrame({
-                    "Plano de Contas": df[plano_col],
-                    "Plano_Normalizado": df[plano_col].apply(normalizar_texto),
-                    "Destino DRE": df[destino_col],
-                    "Grupo Legenda": df[grupo_col] if grupo_col else "",
-                    "Subgrupo Legenda": df[sub_col] if sub_col else "",
-                })
-                frames.append(out)
-        except Exception:
-            continue
-    if frames:
-        plano = pd.concat(frames, ignore_index=True).drop_duplicates("Plano_Normalizado")
-        return plano
-    return pd.DataFrame(columns=["Plano_Normalizado", "Destino DRE", "Grupo Legenda", "Subgrupo Legenda"])
-
-
-def classificar_por_palavra(plano: str) -> str:
-    t = normalizar_texto(plano)
-    regras = [
-        ("ICMS", "ICMS"), ("ISSQN", "ISSQN"), ("DAS", "DAS"), ("MERCADOR", "Mercadorias (CMP)"), ("CMV", "Mercadorias (CMP)"),
-        ("ALIMENT", "Alimentação"), ("FERIAS", "Pagamento de Férias"), ("FGTS", "FGTS"), ("SALARIO", "Salários Fixos + Horas Extras"),
-        ("COMIS", "Comissões e Premiações"), ("PREMIA", "Comissões e Premiações"), ("INSS", "INSS"), ("IRRF", "IRRF Folha"),
-        ("CURSO", "Cursos, Treinamentos, Viagens"), ("TREIN", "Cursos, Treinamentos, Viagens"), ("VIAGEM", "Viagens"),
-        ("PCMSO", "PPRA<PCMSO e Exames"), ("PPRA", "PPRA<PCMSO e Exames"), ("EXAME", "PPRA<PCMSO e Exames"),
-        ("RESCISA", "Rescisão (guia)"), ("UNIFORM", "Uniformes"), ("TRANSPORTE", "Vale Transporte"), ("PRO LABORE", "Pro-Labore"),
-        ("ALUGUEL", "Aluguel&IPTU"), ("IPTU", "Aluguel&IPTU"), ("SEGURO IMOVEL", "Seguro Imóvel"), ("ENERGIA", "Agua/Luz/Fone/Net"),
-        ("AGUA", "Agua/Luz/Fone/Net"), ("LUZ", "Agua/Luz/Fone/Net"), ("FONE", "Agua/Luz/Fone/Net"), ("INTERNET", "Agua/Luz/Fone/Net"),
-        ("COMBUST", "Combustível"), ("MANUTENCAO VEIC", "Manutenção Veículos/Motos"), ("MANUTENCAO MOTO", "Manutenção Veículos/Motos"),
-        ("MANUTENCAO", "Manutenção em Geral"), ("ESCRITORIO", "Mat. de Escritório/Informática"), ("INFORMATICA", "Mat. de Escritório/Informática"),
-        ("LIMPEZA", "Mat. De Limpeza"), ("CONTABIL", "Contábil (Terceiros)"), ("SISTEMA", "Sistemas (Terceiros)"),
-        ("JURID", "Juridico (Terceiros)"), ("ASSESS", "Assessorias/Consultorias/Treinamentos"), ("CONSULT", "Assessorias/Consultorias/Treinamentos"),
-        ("TAXA", "Taxas, Licenças e Contrib."), ("LICENC", "Taxas, Licenças e Contrib."), ("QUEBRA", "Quebra de caixa"),
-        ("MARKETING", "Marketing/Publicidade"), ("PUBLICIDADE", "Marketing/Publicidade"), ("FIDELIDADE", "Sistema Fidelidade"), ("FRETE", "Frete"),
-        ("ROYALT", "Associação de Classe (Royalties)"), ("JUROS", "Juros Boletos"), ("TARIFA", "Tarifas Bancarias"), ("CARTAO", "Taxas de Cartão (MDR)"),
-        ("MDR", "Taxas de Cartão (MDR)"), ("IRPJ", "IRPJ/CSLL"), ("CSLL", "IRPJ/CSLL"), ("REFORMA", "Investimentos - Reformas"),
-        ("EQUIP", "Investimentos - Equipamentos"), ("EXPANSAO", "Investimentos - Expansão"), ("EMPREST", "Pagamento de Empréstimos (Principal)"),
-        ("RETIRADA", "Retiradas (Distribuição de Lucros)"), ("PARCELAMENTO", "Parcelamento de Impostos"), ("DIVERGEN", "Divergência Saídas"),
-    ]
-    for chave, destino in regras:
-        if chave in t:
-            return destino
-    return "NÃO CLASSIFICADO"
-
-
-def ler_vendas_dinamico(base: Path) -> pd.DataFrame:
-    frames = []
-    for arq in arquivos_excel(base / "VENDA POR PAGAMENTO"):
-        try:
-            df = pd.read_excel(arq)
-            df.columns = [str(c).strip() for c in df.columns]
-            val_col = col_por_opcoes(df, ["Total", "Valor Receita", "Valor", "Valor Total"])
-            mes_col = col_por_opcoes(df, ["Ano-mês", "Ano Mes", "Mês", "Mes", "Data"])
-            loja_col = col_por_opcoes(df, ["Loja", "Unidade", "Un. Neg."])
-            forma_col = col_por_opcoes(df, ["Forma de Pagamento", "Forma Pagamento", "Pagamento"])
-            if not val_col:
-                continue
-            out = pd.DataFrame()
-            out["Valor Receita"] = df[val_col].apply(parse_float)
-            out["Mês"] = df[mes_col].apply(lambda x: mes_por_data_ou_nome(x, arq)) if mes_col else mes_por_data_ou_nome(None, arq)
-            out["Loja"] = df[loja_col].astype(str) if loja_col else "Geral"
-            out["Forma de Pagamento"] = df[forma_col].astype(str) if forma_col else ""
-            frames.append(out)
-        except Exception:
-            continue
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["Mês", "Loja", "Valor Receita"])
-
-
-def ler_estoque_dinamico(base: Path) -> pd.DataFrame:
-    frames = []
-    for arq in arquivos_excel(base / "POSIÇÃO DE ESTOQUE"):
-        try:
-            df = pd.read_excel(arq)
-            df.columns = [str(c).strip() for c in df.columns]
-            val_col = col_por_opcoes(df, ["Estoque X Custo Médio", "Estoque X Custo Medio", "Valor Estoque", "Estoque a Custo"])
-            loja_col = col_por_opcoes(df, ["Un. Neg.", "Unidade", "Loja"])
-            if not val_col:
-                continue
-            out = pd.DataFrame()
-            out["Valor Estoque"] = df[val_col].apply(parse_float)
-            out["Mês"] = mes_por_data_ou_nome(None, arq)
-            out["Loja"] = df[loja_col].astype(str) if loja_col else "Geral"
-            frames.append(out)
-        except Exception:
-            continue
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["Mês", "Loja", "Valor Estoque"])
-
-
-def ler_contas_dinamico(base: Path, plano: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    frames = []
-    for arq in arquivos_excel(base / "CONTAS A PAGAR - DRE"):
-        try:
-            df = pd.read_excel(arq)
-            df.columns = [str(c).strip() for c in df.columns]
-            val_col = col_por_opcoes(df, ["Valor Documento", "Valor", "Total"])
-            plano_col = col_por_opcoes(df, ["Plano de Contas", "Plano de contas"])
-            loja_col = col_por_opcoes(df, ["Unidade", "Loja", "Un. Neg."])
-            data_col = col_por_opcoes(df, ["Data Pagamento", "Data de Pagamento", "Data Emissão", "Data Emissao", "Data"])
-            credor_col = col_por_opcoes(df, ["Credor", "Fornecedor", "Favorecido"])
-            status_col = col_por_opcoes(df, ["Status"])
-            if not val_col:
-                continue
-            out = pd.DataFrame()
-            out["Mês"] = df[data_col].apply(lambda x: mes_por_data_ou_nome(x, arq)) if data_col else mes_por_data_ou_nome(None, arq)
-            out["Loja"] = df[loja_col].astype(str) if loja_col else "Geral"
-            out["Valor Documento"] = df[val_col].apply(parse_float)
-            out["Plano de Contas"] = df[plano_col] if plano_col else ""
-            out["Plano_Normalizado"] = out["Plano de Contas"].apply(normalizar_texto)
-            out["Credor"] = df[credor_col].astype(str) if credor_col else ""
-            out["Status"] = df[status_col].astype(str) if status_col else ""
-            frames.append(out)
-        except Exception:
-            continue
-    if not frames:
-        vazio = pd.DataFrame(columns=["Mês", "Loja", "Valor Documento", "Plano de Contas", "Destino DRE"])
-        return vazio, vazio
-    contas = pd.concat(frames, ignore_index=True)
-    if not plano.empty:
-        contas = contas.merge(plano[["Plano_Normalizado", "Destino DRE", "Grupo Legenda", "Subgrupo Legenda"]], on="Plano_Normalizado", how="left")
-    else:
-        contas["Destino DRE"] = None
-    contas["Destino DRE"] = contas["Destino DRE"].fillna(contas["Plano de Contas"].apply(classificar_por_palavra))
-    nc = contas[contas["Destino DRE"].astype(str).str.upper().isin(["NÃO CLASSIFICADO", "NAO CLASSIFICADO", "", "NAN"])]
-    classificados = contas[~contas.index.isin(nc.index)].copy()
-    return classificados, nc
-
-
-def aplicar_valores_dinamicos(dados: pd.DataFrame, vendas: pd.DataFrame, estoque: pd.DataFrame, contas: pd.DataFrame) -> pd.DataFrame:
-    if vendas.empty and estoque.empty and contas.empty:
-        return dados
-    template = dados[["Ordem", "Seção", "Linha DRE", "Nível", "Tipo"]].drop_duplicates().sort_values("Ordem")
-    meses = sorted(set(dados["Mês"].astype(str)) | set(vendas.get("Mês", pd.Series(dtype=str)).astype(str)) | set(estoque.get("Mês", pd.Series(dtype=str)).astype(str)) | set(contas.get("Mês", pd.Series(dtype=str)).astype(str)), key=mes_sort_key)
-    linhas = []
-    for _, row in template.iterrows():
-        for mes in meses:
-            linhas.append({**row.to_dict(), "Mês": mes, "Valor": 0.0, "% Receita": 0.0})
-    out = pd.DataFrame(linhas)
-
-    def mask_linha(nome, mes):
-        return (out["Linha DRE"].apply(normalizar_texto) == normalizar_texto(nome)) & (out["Mês"] == mes)
-    def setv(nome, mes, valor):
-        m = mask_linha(nome, mes)
-        if m.any():
-            out.loc[m, "Valor"] = float(valor or 0)
-    def getv(nome, mes):
-        m = mask_linha(nome, mes)
-        if m.any():
-            return float(out.loc[m, "Valor"].iloc[0])
-        # fallback contains
-        m = out["Linha DRE"].apply(normalizar_texto).str.contains(normalizar_texto(nome), regex=False, na=False) & (out["Mês"] == mes)
-        return float(out.loc[m, "Valor"].iloc[0]) if m.any() else 0.0
-
-    for mes, valor in vendas.groupby("Mês")["Valor Receita"].sum().items() if not vendas.empty else []:
-        setv("1. RECEITA OPERACIONAL BRUTA", mes, valor)
-        setv("Receita de Vendas de Mercadorias", mes, valor)
-        setv("Receitas", mes, valor)
-        setv("Receita Total", mes, valor)
-
-    if not contas.empty:
-        soma_dest = contas.groupby(["Mês", "Destino DRE"], dropna=False)["Valor Documento"].sum().reset_index()
-        for _, r in soma_dest.iterrows():
-            setv(str(r["Destino DRE"]), str(r["Mês"]), r["Valor Documento"])
-
-    for mes, valor in estoque.groupby("Mês")["Valor Estoque"].sum().items() if not estoque.empty else []:
-        setv("Estoque a Custo", mes, valor)
-
-    grupos_pessoal = ["Alimentação", "Pagamento de Férias", "FGTS", "Salários Fixos + Horas Extras", "Comissões e Premiações", "INSS", "IRRF Folha", "Cursos, Treinamentos, Viagens", "PPRA<PCMSO e Exames", "Rescisão (guia)", "Provisão 13 e Férias", "Uniformes", "Vale Transporte", "Pro-Labore", "Outras Despesas com Pessoal"]
-    grupos_admin = ["Aluguel&IPTU", "Seguro Imóvel", "Agua/Luz/Fone/Net", "Combustível", "Manutenção em Geral", "Manutenção Veículos/Motos", "Mat. de Escritório/Informática", "Mat. De Limpeza", "Viagens", "Contábil (Terceiros)", "Sistemas (Terceiros)", "Juridico (Terceiros)", "Assessorias/Consultorias/Treinamentos", "Taxas, Licenças e Contrib.", "Outros (Terceiros)", "Outros (Despesas)", "Quebra de caixa"]
-    grupos_marketing = ["Marketing/Publicidade", "Sistema Fidelidade", "Frete", "Associação de Classe (Royalties)"]
-    financeiros = ["Juros Boletos", "Tarifas Bancarias", "Taxas de Cartão (MDR)"]
-    fluxo = ["Investimentos - Reformas", "Investimentos - Equipamentos", "Investimentos - Expansão", "Pagamento de Empréstimos (Principal)", "Retiradas (Distribuição de Lucros)", "Parcelamento de Impostos", "Divergência Saídas"]
-
-    for mes in meses:
-        receita = getv("1. RECEITA OPERACIONAL BRUTA", mes)
-        deducoes = sum(getv(x, mes) for x in ["ICMS", "DAS", "ISSQN"])
-        setv("2. (-) DEDUÇÕES DA RECEITA BRUTA", mes, deducoes)
-        rec_liq = receita - deducoes
-        setv("3. (=) RECEITA OPERACIONAL LÍQUIDA", mes, rec_liq)
-        cmv = getv("Mercadorias (CMP)", mes)
-        setv("4. (-) CUSTOS DAS VENDAS", mes, cmv)
-        lucro_bruto = rec_liq - cmv
-        setv("5. (=) LUCRO BRUTO", mes, lucro_bruto)
-        pessoal = sum(getv(x, mes) for x in grupos_pessoal)
-        admin = sum(getv(x, mes) for x in grupos_admin)
-        mkt = sum(getv(x, mes) for x in grupos_marketing)
-        setv("Despesas com Pessoal", mes, pessoal)
-        setv("Despesas Administrativas e Ocupação", mes, admin)
-        setv("Despesas com Vendas e Marketing", mes, mkt)
-        desp_op = pessoal + admin + mkt
-        setv("6. (-) DESPESAS OPERACIONAIS", mes, desp_op)
-        ebitda = lucro_bruto - desp_op
-        setv("7. (=) RESULTADO ANTES DO RESULTADO FINANCEIRO (EBITDA/LAJIDA)", mes, ebitda)
-        setv("7. (=) EBITDA / LAJIDA", mes, ebitda)
-        res_fin = sum(getv(x, mes) for x in financeiros)
-        setv("8. (+/-) RESULTADO FINANCEIRO LÍQUIDO", mes, res_fin)
-        lair = ebitda - res_fin
-        setv("9. (=) RESULTADO ANTES DOS TRIBUTOS (LAIR)", mes, lair)
-        trib = getv("IRPJ/CSLL", mes)
-        setv("10. (-) TRIBUTOS SOBRE O LUCRO", mes, trib)
-        lucro_liq = lair - trib
-        setv("11. (=) LUCRO LÍQUIDO DO EXERCÍCIO", mes, lucro_liq)
-        saidas = sum(getv(x, mes) for x in fluxo)
-        setv("--- CONCILIAÇÃO DE FLUXO DE CAIXA (SAÍDAS NÃO-DRE) ---", mes, saidas)
-        setv("Posição Final", mes, lucro_liq - saidas)
-        setv("CMV", mes, cmv)
-        # Ponto de equilíbrio
-        desp_fixas = desp_op - mkt
-        desp_var = mkt + res_fin
-        custos_var = cmv + desp_var
-        margem_contrib = receita - custos_var
-        mc_pct = margem_contrib / receita if receita else 0
-        pe = desp_fixas / mc_pct if mc_pct else 0
-        setv("Despesas Fixas", mes, desp_fixas)
-        setv("Despesas Variáveis", mes, desp_var)
-        setv("Custos e Despesas Fixas Totais", mes, desp_fixas)
-        setv("Custo Médio de Venda (CMV)", mes, cmv)
-        setv("Total de Custos Variáveis (CMV+Despesas Variáveis)", mes, custos_var)
-        setv("Margem de Contribuição Total", mes, margem_contrib)
-        setv("Margem de Contribuição Percentual", mes, mc_pct)
-        setv("Ponto de Equilíbrio em Valor Monetário (Receita)", mes, pe)
-
-    # Percentuais sobre receita, mantendo margem de contribuição percentual como percentual real
-    for mes in meses:
-        receita = getv("1. RECEITA OPERACIONAL BRUTA", mes) or getv("Receita Total", mes)
-        mask_mes = out["Mês"] == mes
-        out.loc[mask_mes, "% Receita"] = out.loc[mask_mes, "Valor"].apply(lambda x: (float(x) / receita) if receita else 0.0)
-        m = mask_linha("Margem de Contribuição Percentual", mes)
-        if m.any():
-            out.loc[m, "% Receita"] = out.loc[m, "Valor"]
-
-    return out
-
-
-def resumo_loja_dinamico(vendas: pd.DataFrame, contas: pd.DataFrame) -> pd.DataFrame:
-    if vendas.empty and contas.empty:
-        return pd.DataFrame()
-    rec = vendas.groupby(["Loja", "Mês"], dropna=False)["Valor Receita"].sum().reset_index() if not vendas.empty else pd.DataFrame(columns=["Loja", "Mês", "Valor Receita"])
-    desp = contas.groupby(["Loja", "Mês"], dropna=False)["Valor Documento"].sum().reset_index() if not contas.empty else pd.DataFrame(columns=["Loja", "Mês", "Valor Documento"])
-    out = rec.merge(desp, on=["Loja", "Mês"], how="outer").fillna(0)
-    out = out.rename(columns={"Valor Receita": "Receita", "Valor Documento": "Despesas"})
-    out["Resultado Caixa Simplificado"] = out["Receita"] - out["Despesas"]
-    return out
-
-
-def atualizar_dinamico_se_existir(dados, resumo_loja, nao_classificados, checks):
-    base = localizar_pasta_base_dre()
-    if not base:
-        return dados, resumo_loja, nao_classificados, checks
-    plano = ler_planos_dinamico(base)
-    vendas = ler_vendas_dinamico(base)
-    estoque = ler_estoque_dinamico(base)
-    contas, nc = ler_contas_dinamico(base, plano)
-    # Só aplica quando encontrou alguma base real nas pastas
-    if vendas.empty and estoque.empty and contas.empty:
-        return dados, resumo_loja, nao_classificados, checks
-    dados_novo = aplicar_valores_dinamicos(dados, vendas, estoque, contas)
-    resumo_loja_novo = resumo_loja_dinamico(vendas, contas)
-    if not nc.empty:
-        nc_out = nc.groupby(["Plano de Contas", "Mês"], dropna=False).agg(Valor=("Valor Documento", "sum"), Qtde=("Valor Documento", "count")).reset_index()
-    else:
-        nc_out = nao_classificados
-    checks_novo = pd.DataFrame({
-        "Checagem": ["Modo de atualização", "Registros vendas", "Registros contas classificadas", "Registros estoque"],
-        "Valor": ["Dinâmico por pastas", len(vendas), len(contas), len(estoque)],
-    })
-    return dados_novo, resumo_loja_novo, nc_out, checks_novo
-
-
 # =========================================================
 # AUTENTICAÇÃO
 # =========================================================
@@ -768,6 +411,12 @@ def tela_login() -> bool:
         else:
             st.error("Usuário ou senha inválidos.")
 
+    st.markdown(
+        """
+        <div class='user-chip'>Usuários autorizados: paulomarques / admin / ubiratan / vanderlei</div>
+        """,
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 
@@ -823,14 +472,9 @@ if not base_path:
 
 try:
     dados, resumo_loja, nao_classificados, checks = carregar_base(str(base_path))
-    # Atualização dinâmica: sempre que houver arquivos nas pastas do projeto,
-    # o dashboard recalcula a base em memória antes de exibir os indicadores.
-    dados, resumo_loja, nao_classificados, checks = atualizar_dinamico_se_existir(
-        dados, resumo_loja, nao_classificados, checks
-    )
 except Exception as e:
     st.markdown("<div class='hero'><h1>DRE Empresa Online</h1><p>Erro ao carregar base.</p></div>", unsafe_allow_html=True)
-    st.error(f"Erro ao ler ou atualizar a base: {e}")
+    st.error(f"Erro ao ler a base: {e}")
     st.stop()
 
 all_months = sorted([m for m in dados["Mês"].dropna().unique().tolist() if str(m).lower() not in ["sem mês", "sem mes", "nan", "none", ""]], key=mes_sort_key)
@@ -862,7 +506,7 @@ st.markdown(
         {logo_top}
         <h1>DRE Empresa Online</h1>
         <p>Dashboard financeiro gerencial • DRE no formato aprovado • Indicadores executivos premium</p>
-        <div class="small-meta">Base dinâmica por pastas • Arquivo referência: {base_path.name} • Período filtrado: {meses_sel[0]} a {meses_sel[-1]} • Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+        <div class="small-meta">Base: {base_path.name} • Período filtrado: {meses_sel[0]} a {meses_sel[-1]} • Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
     </div>
     """,
     unsafe_allow_html=True,
@@ -918,7 +562,7 @@ if pagina == "📊 Painel CEO":
 elif pagina == "📑 DRE Gerencial":
     st.markdown("<div class='section-title'>📑 DRE Gerencial</div>", unsafe_allow_html=True)
     st.markdown("<div class='section-caption'>Modelo mantido no formato aprovado: meses em colunas, valores e percentuais lado a lado, com destaques por tipo de linha.</div>", unsafe_allow_html=True)
-    st.markdown(dre_pivot_html(dados, meses_sel, secao="DRE"), unsafe_allow_html=True)
+    st.markdown(dre_pivot_html(dados, meses_sel, secao=None), unsafe_allow_html=True)
 
 elif pagina == "📈 Evolução Mensal":
     st.markdown("<div class='section-title'>📈 Evolução Mensal</div>", unsafe_allow_html=True)
