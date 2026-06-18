@@ -873,18 +873,53 @@ def semaforo(label: str, nivel: str, detalhe: str):
 
 
 def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path | None = None) -> bytes | None:
+    """Gera PDF executivo mantendo o resumo do último mês e adicionando consolidado do período."""
     try:
         from reportlab.lib import colors
         from reportlab.lib.pagesizes import A4
-        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import cm
-        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+        from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak
     except Exception:
         return None
 
+    def soma_linha(busca: str) -> float:
+        return sum(valor_linha(dados, busca, m) for m in meses)
+
+    def media_ratio_linha(busca: str) -> float:
+        vals = [pct_linha(dados, busca, m) for m in meses]
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else 0.0
+
+    def ratio_total(numerador: float, denominador: float) -> float:
+        return numerador / denominador if denominador else 0.0
+
+    def estilo_tabela(tbl: Table):
+        tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0B2B45")),
+            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
+            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
+            ("FONTSIZE", (0,0), (-1,-1), 9),
+            ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#F4F8FC")),
+            ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#D5E2EF")),
+            ("FONTNAME", (0,1), (-1,-1), "Helvetica"),
+            ("ALIGN", (1,1), (-1,-1), "RIGHT"),
+            ("VALIGN", (0,0), (-1,-1), "MIDDLE"),
+            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF5FB")]),
+        ]))
+        return tbl
+
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=1.2*cm, leftMargin=1.2*cm, topMargin=1.0*cm, bottomMargin=1.0*cm)
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.2*cm,
+        leftMargin=1.2*cm,
+        topMargin=1.0*cm,
+        bottomMargin=1.0*cm,
+    )
     styles = getSampleStyleSheet()
+    styles.add(ParagraphStyle(name="EiroxSmall", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#4F5F70")))
     elementos = []
 
     if logo_path and logo_path.exists():
@@ -896,9 +931,15 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
             pass
 
     ultimo = meses[-1]
+    periodo_txt = f"{meses[0]} a {meses[-1]}"
+
+    # =====================================================
+    # Página 1 — resumo do último mês, preservando o modelo atual
+    # =====================================================
     elementos.append(Paragraph("DRE Empresa Online - Relatório Executivo", styles["Title"]))
-    elementos.append(Paragraph(f"Período: {meses[0]} a {meses[-1]} | Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
-    elementos.append(Spacer(1, 0.4*cm))
+    elementos.append(Paragraph(f"Período: {periodo_txt} | Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles["Normal"]))
+    elementos.append(Spacer(1, 0.35*cm))
+    elementos.append(Paragraph(f"Resumo Executivo do Último Mês ({ultimo})", styles["Heading2"]))
 
     linhas = [
         ["Indicador", "Valor", "% Receita"],
@@ -908,43 +949,126 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
         ["Lucro Líquido", brl(valor_linha(dados, "LUCRO LÍQUIDO", ultimo)), pct(pct_linha(dados, "LUCRO LÍQUIDO", ultimo))],
         ["Posição Final Caixa", brl(valor_linha(dados, "POSIÇÃO FINAL", ultimo)), pct(pct_linha(dados, "POSIÇÃO FINAL", ultimo))],
     ]
-    tabela = Table(linhas, colWidths=[8*cm, 4*cm, 3*cm])
-    tabela.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0B2B45")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("BACKGROUND", (0,1), (-1,-1), colors.HexColor("#F4F8FC")),
-        ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#D5E2EF")),
-        ("FONTNAME", (0,1), (-1,-1), "Helvetica"),
-        ("ALIGN", (1,1), (-1,-1), "RIGHT"),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#EEF5FB")]),
-    ]))
-    elementos.append(tabela)
+    elementos.append(estilo_tabela(Table(linhas, colWidths=[8*cm, 4*cm, 3*cm])))
     elementos.append(Spacer(1, 0.5*cm))
 
-    elementos.append(Paragraph("Resumo Farmacêutico", styles["Heading2"]))
+    elementos.append(Paragraph("Resumo Farmacêutico do Último Mês", styles["Heading2"]))
     receita = valor_linha(dados, "RECEITA OPERACIONAL BRUTA", ultimo)
     estoque = valor_linha(dados, "ESTOQUE A CUSTO", ultimo)
     cmv = valor_linha(dados, "CUSTOS DAS VENDAS", ultimo)
     despesas_op = valor_linha(dados, "DESPESAS OPERACIONAIS", ultimo)
+    pos_final = valor_linha(dados, "POSIÇÃO FINAL", ultimo)
     farmacia = [
         ["Indicador", "Resultado"],
         ["Estoque / Receita", f"{(estoque/receita):.2f}x".replace(".", ",") if receita else "0,00x"],
         ["Dias de Estoque", f"{(estoque/cmv*30):.1f} dias".replace(".", ",") if cmv else "0,0 dias"],
-        ["Capital de Giro", brl(estoque - valor_linha(dados, "POSIÇÃO FINAL", ultimo))],
+        ["Capital de Giro", brl(estoque - pos_final)],
         ["CMV %", pct(cmv/receita if receita else 0)],
         ["Despesa Operacional %", pct(despesas_op/receita if receita else 0)],
         ["EBITDA %", pct(pct_linha(dados, "EBITDA", ultimo))],
     ]
-    tabela2 = Table(farmacia, colWidths=[8*cm, 7*cm])
-    tabela2.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0B2B45")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("GRID", (0,0), (-1,-1), 0.4, colors.HexColor("#D5E2EF")),
-        ("ALIGN", (1,1), (-1,-1), "RIGHT"),
-    ]))
-    elementos.append(tabela2)
+    elementos.append(estilo_tabela(Table(farmacia, colWidths=[8*cm, 7*cm])))
+
+    # =====================================================
+    # Página 2 — consolidado do período
+    # =====================================================
+    elementos.append(PageBreak())
+    elementos.append(Paragraph("Resumo Consolidado do Período", styles["Title"]))
+    elementos.append(Paragraph(f"Período consolidado: {periodo_txt}", styles["Normal"]))
+    elementos.append(Spacer(1, 0.35*cm))
+
+    receita_total = soma_linha("RECEITA OPERACIONAL BRUTA")
+    lucro_bruto_total = soma_linha("LUCRO BRUTO")
+    ebitda_total = soma_linha("EBITDA")
+    lucro_liq_total = soma_linha("LUCRO LÍQUIDO")
+    posicao_final_ultimo = valor_linha(dados, "POSIÇÃO FINAL", ultimo)
+    estoque_medio = sum(valor_linha(dados, "ESTOQUE A CUSTO", m) for m in meses) / len(meses)
+    posicao_media = sum(valor_linha(dados, "POSIÇÃO FINAL", m) for m in meses) / len(meses)
+    capital_giro_medio = estoque_medio - posicao_media
+
+    consolidado = [
+        ["Indicador", "Consolidado", "% Receita"],
+        ["Receita Acumulada", brl(receita_total), "100,00%"],
+        ["Lucro Bruto Acumulado", brl(lucro_bruto_total), pct(ratio_total(lucro_bruto_total, receita_total))],
+        ["EBITDA Acumulado", brl(ebitda_total), pct(ratio_total(ebitda_total, receita_total))],
+        ["Lucro Líquido Acumulado", brl(lucro_liq_total), pct(ratio_total(lucro_liq_total, receita_total))],
+        ["Posição Final Caixa", brl(posicao_final_ultimo), pct(ratio_total(posicao_final_ultimo, receita))],
+        ["Margem EBITDA Consolidada", pct(ratio_total(ebitda_total, receita_total)), ""],
+        ["Margem Líquida Consolidada", pct(ratio_total(lucro_liq_total, receita_total)), ""],
+        ["Capital de Giro Médio", brl(capital_giro_medio), ""],
+    ]
+    elementos.append(estilo_tabela(Table(consolidado, colWidths=[8*cm, 4*cm, 3*cm])))
+    elementos.append(Spacer(1, 0.55*cm))
+
+    elementos.append(Paragraph("Evolução Mensal", styles["Heading2"]))
+    evol_header = ["Indicador"] + meses
+    evol_linhas = [
+        ["Receita"] + [brl(valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m)) for m in meses],
+        ["Lucro Bruto"] + [brl(valor_linha(dados, "LUCRO BRUTO", m)) for m in meses],
+        ["EBITDA"] + [brl(valor_linha(dados, "EBITDA", m)) for m in meses],
+        ["Lucro Líquido"] + [brl(valor_linha(dados, "LUCRO LÍQUIDO", m)) for m in meses],
+        ["Caixa Final"] + [brl(valor_linha(dados, "POSIÇÃO FINAL", m)) for m in meses],
+    ]
+    largura_primeira = 4.2*cm
+    largura_mes = max(2.0*cm, (15.5*cm - largura_primeira) / max(len(meses), 1))
+    elementos.append(estilo_tabela(Table([evol_header] + evol_linhas, colWidths=[largura_primeira] + [largura_mes]*len(meses))))
+
+    # =====================================================
+    # Página 3 — consolidado farmacêutico + parecer
+    # =====================================================
+    elementos.append(PageBreak())
+    elementos.append(Paragraph("Consolidado Farmacêutico", styles["Title"]))
+    elementos.append(Paragraph(f"Indicadores médios e acumulados do período: {periodo_txt}", styles["Normal"]))
+    elementos.append(Spacer(1, 0.35*cm))
+
+    cmv_total = soma_linha("CUSTOS DAS VENDAS")
+    despesas_total = soma_linha("DESPESAS OPERACIONAIS")
+    estoque_receita_medio = sum((valor_linha(dados, "ESTOQUE A CUSTO", m) / valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m)) if valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m) else 0 for m in meses) / len(meses)
+    dias_estoque_medio = sum((valor_linha(dados, "ESTOQUE A CUSTO", m) / valor_linha(dados, "CUSTOS DAS VENDAS", m) * 30) if valor_linha(dados, "CUSTOS DAS VENDAS", m) else 0 for m in meses) / len(meses)
+
+    farm_consolidado = [
+        ["Indicador", "Consolidado / Média"],
+        ["Estoque / Receita Médio", f"{estoque_receita_medio:.2f}x".replace(".", ",")],
+        ["Dias de Estoque Médio", f"{dias_estoque_medio:.1f} dias".replace(".", ",")],
+        ["Capital de Giro Médio", brl(capital_giro_medio)],
+        ["CMV % Consolidado", pct(ratio_total(cmv_total, receita_total))],
+        ["Despesa Operacional % Consolidada", pct(ratio_total(despesas_total, receita_total))],
+        ["EBITDA % Consolidado", pct(ratio_total(ebitda_total, receita_total))],
+    ]
+    elementos.append(estilo_tabela(Table(farm_consolidado, colWidths=[8*cm, 7*cm])))
+    elementos.append(Spacer(1, 0.55*cm))
+
+    margem_ebitda = ratio_total(ebitda_total, receita_total)
+    margem_liquida = ratio_total(lucro_liq_total, receita_total)
+    if margem_ebitda >= 0.10 and margem_liquida >= 0.05:
+        situacao = "saudável"
+        comentario = "A empresa apresenta geração operacional positiva e margem consistente para o período analisado."
+    elif margem_ebitda >= 0.05:
+        situacao = "em atenção"
+        comentario = "A operação apresenta resultado positivo, porém com necessidade de acompanhamento de margem, estoque e despesas."
+    else:
+        situacao = "crítica"
+        comentario = "A operação requer atenção imediata sobre margem, estrutura de despesas e capital imobilizado."
+
+    elementos.append(Paragraph("Parecer Executivo Automático", styles["Heading2"]))
+    parecer = (
+        f"Receita acumulada do período: <b>{brl(receita_total)}</b>.<br/>"
+        f"EBITDA acumulado: <b>{brl(ebitda_total)}</b>, com margem consolidada de <b>{pct(margem_ebitda)}</b>.<br/>"
+        f"Lucro líquido acumulado: <b>{brl(lucro_liq_total)}</b>, com margem líquida de <b>{pct(margem_liquida)}</b>.<br/>"
+        f"O estoque médio representa <b>{estoque_receita_medio:.2f}x</b> a receita mensal média e equivale a aproximadamente <b>{dias_estoque_medio:.1f} dias</b> de CMV.<br/>"
+        f"Situação financeira do período: <b>{situacao.upper()}</b>. {comentario}"
+    ).replace(".", ",", 1) if False else (
+        f"Receita acumulada do período: <b>{brl(receita_total)}</b>.<br/>"
+        f"EBITDA acumulado: <b>{brl(ebitda_total)}</b>, com margem consolidada de <b>{pct(margem_ebitda)}</b>.<br/>"
+        f"Lucro líquido acumulado: <b>{brl(lucro_liq_total)}</b>, com margem líquida de <b>{pct(margem_liquida)}</b>.<br/>"
+        f"O estoque médio representa <b>{estoque_receita_medio:.2f}x</b> a receita mensal média e equivale a aproximadamente <b>{dias_estoque_medio:.1f} dias</b> de CMV.<br/>"
+        f"Situação financeira do período: <b>{situacao.upper()}</b>. {comentario}"
+    )
+    parecer = parecer.replace(".", ",") if False else parecer
+    elementos.append(Paragraph(parecer, styles["Normal"]))
+    elementos.append(Spacer(1, 0.35*cm))
+    elementos.append(Paragraph("EIROX FINANCIAL ANALYTICS • Relatório Executivo gerado automaticamente", styles["EiroxSmall"]))
+
     doc.build(elementos)
     return buffer.getvalue()
 
