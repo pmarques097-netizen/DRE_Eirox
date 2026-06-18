@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +40,16 @@ POSSIVEIS_BASES = [
     Path.home() / "Desktop" / "Dre" / "data" / "DRE_Consolidado_Moderno.xlsx",
     Path.home() / "Desktop" / "Dre" / "DRE_Consolidado_Moderno.xlsx",
 ]
+
+PASTAS_DADOS_AUTOMATICAS = [
+    APP_DIR,
+    APP_DIR.parent,
+    Path.cwd(),
+    Path.cwd().parent,
+    Path.home() / "Desktop" / "Dre",
+]
+
+NOME_PASTA_ESTOQUE = "POSIÇÃO DE ESTOQUE"
 
 POSSIVEIS_LOGOS = [
     APP_DIR / "assets" / "logo_eirox.png",
@@ -241,7 +252,122 @@ def parse_float(v) -> float:
         return 0.0
 
 
-@st.cache_data(show_spinner=False)
+def normalizar_texto(txt) -> str:
+    """Normaliza texto para comparação de nomes de colunas e arquivos."""
+    if txt is None:
+        return ""
+    s = str(txt).strip().upper()
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return s
+
+
+def localizar_pasta_dados(nome_pasta: str) -> Path | None:
+    """Localiza automaticamente uma pasta de base no ambiente local ou online."""
+    for base in PASTAS_DADOS_AUTOMATICAS:
+        candidato = base / nome_pasta
+        if candidato.exists() and candidato.is_dir():
+            return candidato
+    return None
+
+
+def mes_por_nome_arquivo(path: Path) -> str | None:
+    """Identifica o mês pelo nome do arquivo, ex.: JANEIRO_2026.xlsx -> jan/26."""
+    nome = normalizar_texto(path.stem)
+    mapa = {
+        "JANEIRO": "jan", "JAN": "jan",
+        "FEVEREIRO": "fev", "FEV": "fev",
+        "MARCO": "mar", "MAR": "mar",
+        "MARÇO": "mar",
+        "ABRIL": "abr", "ABR": "abr",
+        "MAIO": "mai", "MAI": "mai",
+        "JUNHO": "jun", "JUN": "jun",
+        "JULHO": "jul", "JUL": "jul",
+        "AGOSTO": "ago", "AGO": "ago",
+        "SETEMBRO": "set", "SET": "set",
+        "OUTUBRO": "out", "OUT": "out",
+        "NOVEMBRO": "nov", "NOV": "nov",
+        "DEZEMBRO": "dez", "DEZ": "dez",
+    }
+    ano_match = re.search(r"20(\d{2})", nome)
+    ano2 = ano_match.group(1) if ano_match else "26"
+    for palavra, mes_abrev in mapa.items():
+        if palavra in nome:
+            return f"{mes_abrev}/{ano2}"
+    return None
+
+
+def escolher_coluna_estoque(df: pd.DataFrame) -> str | None:
+    """Encontra a coluna de valor financeiro do estoque."""
+    candidatos = []
+    for col in df.columns:
+        n = normalizar_texto(col)
+        if n in ["ESTOQUE X CUSTO MEDIO", "ESTOQUE A CUSTO", "VALOR ESTOQUE", "VALOR DO ESTOQUE"]:
+            return col
+        if "ESTOQUE" in n and "CUSTO" in n:
+            candidatos.append(col)
+        elif "VALOR" in n and "ESTOQUE" in n:
+            candidatos.append(col)
+    return candidatos[0] if candidatos else None
+
+
+def ler_estoque_automatico() -> dict[str, float]:
+    """Lê sempre a pasta POSIÇÃO DE ESTOQUE e retorna o total por mês.
+
+    Use esta rotina para que alterações/substituições nos arquivos da pasta
+    reflitam no dashboard sem depender do consolidado congelado.
+    """
+    pasta = localizar_pasta_dados(NOME_PASTA_ESTOQUE)
+    if not pasta:
+        return {}
+
+    totais: dict[str, float] = {}
+    arquivos = list(pasta.rglob("*.xlsx")) + list(pasta.rglob("*.xls"))
+    for arquivo in arquivos:
+        if arquivo.name.startswith("~$"):
+            continue
+        mes = mes_por_nome_arquivo(arquivo)
+        if not mes:
+            continue
+        try:
+            df = pd.read_excel(arquivo)
+        except Exception:
+            continue
+        if df.empty:
+            continue
+        col_valor = escolher_coluna_estoque(df)
+        if not col_valor:
+            continue
+        total = df[col_valor].apply(parse_float).sum()
+        totais[mes] = totais.get(mes, 0.0) + float(total)
+    return totais
+
+
+def aplicar_estoque_dinamico(dados: pd.DataFrame) -> pd.DataFrame:
+    """Atualiza a linha 'Estoque a Custo' usando a pasta de estoque.
+
+    Mantém o restante da estrutura, cálculos e layout já aprovados.
+    """
+    dados = dados.copy()
+    totais_estoque = ler_estoque_automatico()
+    if not totais_estoque:
+        return dados
+
+    for mes, total in totais_estoque.items():
+        mask_estoque = (
+            dados["Linha DRE"].astype(str).str.upper().str.contains("ESTOQUE A CUSTO", na=False)
+            & (dados["Mês"].astype(str).str.strip() == mes)
+        )
+        if not mask_estoque.any():
+            continue
+        receita = valor_linha(dados, "RECEITA OPERACIONAL BRUTA", mes)
+        if receita == 0:
+            receita = valor_linha(dados, "RECEITAS", mes)
+        dados.loc[mask_estoque, "Valor"] = total
+        dados.loc[mask_estoque, "% Receita"] = (total / receita) if receita else 0.0
+    return dados
+
+
 def carregar_base(caminho: str):
     path = Path(caminho)
     sheets = pd.ExcelFile(path).sheet_names
@@ -541,6 +667,7 @@ if not base_path:
 
 try:
     dados, resumo_loja, nao_classificados, checks = carregar_base(str(base_path))
+    dados = aplicar_estoque_dinamico(dados)
 except Exception as e:
     st.markdown("<div class='hero'><h1>DRE Empresa Online</h1><p>Erro ao carregar base.</p></div>", unsafe_allow_html=True)
     st.error(f"Erro ao ler a base: {e}")
@@ -575,7 +702,7 @@ st.markdown(
         {logo_top}
         <h1>DRE Empresa Online</h1>
         <p>Dashboard financeiro gerencial • DRE no formato aprovado • Indicadores executivos premium</p>
-        <div class="small-meta">Base: {base_path.name} • Período filtrado: {meses_sel[0]} a {meses_sel[-1]} • Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
+        <div class="small-meta">Base: {base_path.name} • Estoque dinâmico • Período filtrado: {meses_sel[0]} a {meses_sel[-1]} • Atualizado em {datetime.now().strftime('%d/%m/%Y %H:%M')}</div>
     </div>
     """,
     unsafe_allow_html=True,
