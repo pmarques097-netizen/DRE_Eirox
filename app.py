@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO DINÂMICA TOTAL - DRE EIROX ENTERPRISE PREMIUM v1.5
+VERSÃO DINÂMICA TOTAL - DRE EIROX ENTERPRISE PREMIUM v1.6
 
 Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as pastas:
 - CONTAS A PAGAR - DRE
@@ -9,7 +9,8 @@ Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as
 - POSIÇÃO DE ESTOQUE
 - VENDA POR PAGAMENTO
 
-O arquivo DRE_Consolidado_Moderno.xlsx é usado apenas como fallback quando as pastas não forem encontradas.
+Esta versão NÃO usa fallback silencioso para consolidado quando as pastas não forem encontradas.
+Ela mostra exatamente qual pasta está faltando e atualiza o consolidado automaticamente quando recalcula.
 
 Como executar:
     streamlit run app.py
@@ -307,17 +308,36 @@ def meses_fechados_ano_atual(meses: list[str]) -> list[str]:
     return [m for m in meses if mes_sort_key(m)[0] == ano_base and mes_sort_key(m)[1] < 99]
 
 def localizar_pasta(nome_com_acento: str, nome_sem_acento: str) -> Path | None:
+    """Localiza pastas tanto na raiz quanto dentro de /data.
+
+    No Streamlit Cloud, é comum publicar as pastas dentro de data/.
+    Na execução local, normalmente elas ficam na raiz C:\\Users\\Comercial\\Desktop\\Dre.
+    Esta função cobre os dois cenários.
+    """
     candidatos = [
         APP_DIR / nome_com_acento,
         APP_DIR / nome_sem_acento,
+        APP_DIR / "data" / nome_com_acento,
+        APP_DIR / "data" / nome_sem_acento,
         APP_DIR.parent / nome_com_acento,
         APP_DIR.parent / nome_sem_acento,
+        APP_DIR.parent / "data" / nome_com_acento,
+        APP_DIR.parent / "data" / nome_sem_acento,
         Path.cwd() / nome_com_acento,
         Path.cwd() / nome_sem_acento,
+        Path.cwd() / "data" / nome_com_acento,
+        Path.cwd() / "data" / nome_sem_acento,
         Path.home() / "Desktop" / "Dre" / nome_com_acento,
         Path.home() / "Desktop" / "Dre" / nome_sem_acento,
+        Path.home() / "Desktop" / "Dre" / "data" / nome_com_acento,
+        Path.home() / "Desktop" / "Dre" / "data" / nome_sem_acento,
     ]
+    vistos = set()
     for p in candidatos:
+        p = p.resolve() if p.exists() else p
+        if str(p) in vistos:
+            continue
+        vistos.add(str(p))
         if p.exists() and p.is_dir():
             return p
     return None
@@ -543,7 +563,12 @@ def build_dynamic_dre() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
     }
 
     if not all(status_pastas.values()):
-        raise FileNotFoundError("Pastas de base não encontradas. Usando fallback do consolidado.")
+        faltantes = [nome for nome, pasta in status_pastas.items() if not pasta]
+        detalhe = " | ".join(faltantes)
+        raise FileNotFoundError(
+            "Pastas de base não encontradas no ambiente atual: " + detalhe +
+            ". Coloque as pastas na raiz do projeto ou dentro da pasta data/."
+        )
 
     plano = carregar_plano_contas(pasta_plano)
     vendas = carregar_vendas(pasta_venda)
@@ -682,6 +707,10 @@ def build_dynamic_dre() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.Da
 
     checks = pd.DataFrame([
         {"Checagem": "Modo de leitura", "Valor": "DINÂMICO PELAS PASTAS"},
+        {"Checagem": "Pasta vendas", "Valor": str(pasta_venda)},
+        {"Checagem": "Pasta contas", "Valor": str(pasta_contas)},
+        {"Checagem": "Pasta estoque", "Valor": str(pasta_estoque)},
+        {"Checagem": "Pasta plano", "Valor": str(pasta_plano)},
         {"Checagem": "Arquivos de vendas lidos", "Valor": len(arquivos_excel(pasta_venda))},
         {"Checagem": "Arquivos de contas lidos", "Valor": len(arquivos_excel(pasta_contas))},
         {"Checagem": "Arquivos de estoque lidos", "Valor": len(arquivos_excel(pasta_estoque))},
@@ -704,12 +733,33 @@ def carregar_fallback_consolidado() -> tuple[pd.DataFrame, pd.DataFrame, pd.Data
     checks = pd.DataFrame([{"Checagem": "Modo de leitura", "Valor": "FALLBACK CONSOLIDADO"}, {"Checagem": "Arquivo", "Valor": str(base_path)}])
     return dados, resumo_loja, nao, checks, {}
 
+def salvar_consolidado_dinamico(dados: pd.DataFrame, resumo_loja: pd.DataFrame, nao: pd.DataFrame, checks: pd.DataFrame) -> None:
+    """Gera/atualiza o DRE_Consolidado_Moderno.xlsx a partir das pastas.
+
+    Importante: no Streamlit Cloud o arquivo é atualizado no ambiente em execução.
+    Para persistir no GitHub, ainda é necessário subir os arquivos de base atualizados.
+    """
+    destinos = [APP_DIR / "data" / "DRE_Consolidado_Moderno.xlsx", APP_DIR / "DRE_Consolidado_Moderno.xlsx"]
+    for destino in destinos:
+        try:
+            destino.parent.mkdir(parents=True, exist_ok=True)
+            with pd.ExcelWriter(destino, engine="openpyxl") as writer:
+                dados.to_excel(writer, sheet_name="DADOS_DRE", index=False)
+                resumo_loja.to_excel(writer, sheet_name="RESUMO_LOJA", index=False)
+                nao.to_excel(writer, sheet_name="NAO_CLASSIFICADOS", index=False)
+                checks.to_excel(writer, sheet_name="CHECKS", index=False)
+            return
+        except Exception:
+            continue
+
 def carregar_base_dre():
     try:
         dados, resumo_loja, nao, checks, status = build_dynamic_dre()
+        salvar_consolidado_dinamico(dados, resumo_loja, nao, checks)
     except Exception as e:
-        dados, resumo_loja, nao, checks, status = carregar_fallback_consolidado()
-        checks = pd.concat([checks, pd.DataFrame([{"Checagem": "Aviso", "Valor": f"Fallback usado: {e}"}])], ignore_index=True)
+        # Não usar fallback silencioso: se o online não encontrar as pastas, precisa mostrar o erro.
+        # Isso evita continuar exibindo DRE_Consolidado_Moderno.xlsx antigo sem perceber.
+        raise RuntimeError(str(e))
 
     dados.columns = [str(c).strip() for c in dados.columns]
     dados["Valor"] = dados["Valor"].apply(parse_float)
@@ -850,6 +900,10 @@ else:
 st.sidebar.markdown("<div class='sidebar-title'>DRE Financeiro Online</div>", unsafe_allow_html=True)
 st.sidebar.markdown("<div class='sidebar-subtitle'>Enterprise Premium</div>", unsafe_allow_html=True)
 botao_logout_sidebar()
+
+st.sidebar.markdown("<div class='sidebar-section'>Atualização</div>", unsafe_allow_html=True)
+if st.sidebar.button("🔄 Atualizar dados", use_container_width=True):
+    st.rerun()
 
 st.sidebar.markdown("<div class='sidebar-section'>Navegação</div>", unsafe_allow_html=True)
 pagina = st.sidebar.radio(
@@ -1026,4 +1080,4 @@ elif pagina == "⚠️ Auditoria DRE":
             show["Valor"] = show["Valor"].apply(brl)
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • v1.6 sem fallback silencioso</div>", unsafe_allow_html=True)
