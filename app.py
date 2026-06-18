@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO AJUSTADA - DRE EIROX ENTERPRISE PREMIUM v1.1 DRE COMPLETO
+VERSÃO AJUSTADA - DRE EIROX ENTERPRISE PREMIUM v1.2 DRE COMPLETO + ESTOQUE DINÂMICO
 Versão baseada na base congelada DRE_Consolidado_Moderno.xlsx.
 Fonte principal: aba DADOS_DRE.
 
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import base64
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
@@ -239,6 +240,152 @@ def parse_float(v) -> float:
         return 0.0
 
 
+def normalizar_texto(txt) -> str:
+    txt = "" if pd.isna(txt) else str(txt)
+    txt = unicodedata.normalize("NFKD", txt)
+    txt = "".join(ch for ch in txt if not unicodedata.combining(ch))
+    return re.sub(r"\s+", " ", txt).strip().upper()
+
+
+def localizar_pasta_estoque() -> Path | None:
+    candidatos = [
+        APP_DIR / "POSIÇÃO DE ESTOQUE",
+        APP_DIR / "POSICAO DE ESTOQUE",
+        APP_DIR.parent / "POSIÇÃO DE ESTOQUE",
+        APP_DIR.parent / "POSICAO DE ESTOQUE",
+        Path.cwd() / "POSIÇÃO DE ESTOQUE",
+        Path.cwd() / "POSICAO DE ESTOQUE",
+        Path.home() / "Desktop" / "Dre" / "POSIÇÃO DE ESTOQUE",
+        Path.home() / "Desktop" / "Dre" / "POSICAO DE ESTOQUE",
+    ]
+    for pasta in candidatos:
+        if pasta.exists() and pasta.is_dir():
+            return pasta
+    return None
+
+
+def mes_arquivo_para_dre(path: Path) -> str | None:
+    nome = normalizar_texto(path.stem)
+    mapa = {
+        "JANEIRO": "jan/26", "JAN": "jan/26",
+        "FEVEREIRO": "fev/26", "FEV": "fev/26",
+        "MARCO": "mar/26", "MAR": "mar/26",
+        "ABRIL": "abr/26", "ABR": "abr/26",
+        "MAIO": "mai/26", "MAI": "mai/26",
+        "JUNHO": "jun/26", "JUN": "jun/26",
+        "JULHO": "jul/26", "JUL": "jul/26",
+        "AGOSTO": "ago/26", "AGO": "ago/26",
+        "SETEMBRO": "set/26", "SET": "set/26",
+        "OUTUBRO": "out/26", "OUT": "out/26",
+        "NOVEMBRO": "nov/26", "NOV": "nov/26",
+        "DEZEMBRO": "dez/26", "DEZ": "dez/26",
+    }
+    ano_match = re.search(r"20(\d{2})", nome)
+    ano2 = ano_match.group(1) if ano_match else "26"
+    for chave, mes in mapa.items():
+        if chave in nome:
+            return mes.replace("/26", f"/{ano2}")
+    m = re.search(r"(JAN|FEV|MAR|ABR|MAI|JUN|JUL|AGO|SET|OUT|NOV|DEZ)[A-Z]*[_\- ]*(\d{2,4})?", nome)
+    if m:
+        abrev = m.group(1).lower()
+        ano = m.group(2)
+        if ano:
+            ano2 = ano[-2:]
+        return f"{abrev}/{ano2}"
+    return None
+
+
+def escolher_coluna_estoque(df: pd.DataFrame) -> str | None:
+    colunas = list(df.columns)
+    normalizadas = {col: normalizar_texto(col) for col in colunas}
+    prioridades = [
+        "ESTOQUE A CUSTO",
+        "ESTOQUE X CUSTO MEDIO",
+        "ESTOQUE CUSTO MEDIO",
+        "VALOR ESTOQUE",
+        "VALOR DO ESTOQUE",
+        "CUSTO TOTAL",
+        "TOTAL CUSTO",
+    ]
+    for alvo in prioridades:
+        for col, ncol in normalizadas.items():
+            if alvo in ncol:
+                return col
+    candidatos = []
+    for col, ncol in normalizadas.items():
+        if "ESTOQUE" in ncol and ("CUSTO" in ncol or "VALOR" in ncol or "TOTAL" in ncol):
+            if not any(x in ncol for x in ["QTD", "QTDE", "QUANTIDADE", "COD", "EAN"]):
+                candidatos.append(col)
+    return candidatos[0] if candidatos else None
+
+
+def ler_valor_estoque_arquivo(path: Path) -> float | None:
+    try:
+        xls = pd.ExcelFile(path)
+        for aba in xls.sheet_names:
+            try:
+                df = pd.read_excel(path, sheet_name=aba)
+                if df.empty:
+                    continue
+                df.columns = [str(c).strip() for c in df.columns]
+                col = escolher_coluna_estoque(df)
+                if not col:
+                    continue
+                serie = df[col].apply(parse_float)
+                valor = float(serie.sum())
+                if valor > 0:
+                    return valor
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
+def calcular_estoque_dinamico_por_mes() -> dict[str, float]:
+    pasta = localizar_pasta_estoque()
+    if not pasta:
+        return {}
+    arquivos = [p for p in pasta.rglob("*.xls*") if not p.name.startswith("~$")]
+    por_mes: dict[str, list[Path]] = {}
+    for arq in arquivos:
+        mes = mes_arquivo_para_dre(arq)
+        if mes:
+            por_mes.setdefault(mes, []).append(arq)
+    resultado: dict[str, float] = {}
+    for mes, lista in por_mes.items():
+        # Usa o arquivo mais recente de cada mês para evitar duplicidade entre .xls e .xlsx.
+        lista_ordenada = sorted(lista, key=lambda p: p.stat().st_mtime, reverse=True)
+        for arq in lista_ordenada:
+            valor = ler_valor_estoque_arquivo(arq)
+            if valor is not None:
+                resultado[mes] = valor
+                break
+    return resultado
+
+
+def aplicar_estoque_dinamico(dados: pd.DataFrame) -> pd.DataFrame:
+    """Atualiza a linha 'Estoque a Custo' lendo direto a pasta POSIÇÃO DE ESTOQUE."""
+    dados = dados.copy()
+    estoque_por_mes = calcular_estoque_dinamico_por_mes()
+    if not estoque_por_mes:
+        return dados
+    for mes, valor_estoque in estoque_por_mes.items():
+        mask = (
+            dados["Linha DRE"].astype(str).str.upper().str.contains("ESTOQUE A CUSTO", na=False)
+            & (dados["Mês"].astype(str).str.strip() == mes)
+        )
+        if not mask.any():
+            continue
+        receita = valor_linha(dados, "RECEITA OPERACIONAL BRUTA", mes)
+        if receita == 0:
+            receita = valor_linha(dados, "RECEITAS", mes)
+        dados.loc[mask, "Valor"] = float(valor_estoque)
+        # Mantém o mesmo padrão visual do dashboard: razão Estoque/Receita exibida como percentual.
+        dados.loc[mask, "% Receita"] = (float(valor_estoque) / receita) if receita else 0.0
+    return dados
+
+
 @st.cache_data(show_spinner=False)
 def carregar_base(caminho: str):
     path = Path(caminho)
@@ -411,12 +558,7 @@ def tela_login() -> bool:
         else:
             st.error("Usuário ou senha inválidos.")
 
-    st.markdown(
-        """
-        <div class='user-chip'>Usuários autorizados: paulomarques / admin / ubiratan / vanderlei</div>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Segurança: não exibir usuários autorizados na tela de login.
     st.stop()
 
 
@@ -472,6 +614,9 @@ if not base_path:
 
 try:
     dados, resumo_loja, nao_classificados, checks = carregar_base(str(base_path))
+    # Atualização dinâmica: estoque é sempre lido diretamente da pasta POSIÇÃO DE ESTOQUE.
+    # Assim, ao substituir os arquivos de estoque, basta recarregar o dashboard.
+    dados = aplicar_estoque_dinamico(dados)
 except Exception as e:
     st.markdown("<div class='hero'><h1>DRE Empresa Online</h1><p>Erro ao carregar base.</p></div>", unsafe_allow_html=True)
     st.error(f"Erro ao ler a base: {e}")
