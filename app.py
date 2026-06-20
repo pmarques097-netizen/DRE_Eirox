@@ -876,7 +876,7 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
     """Gera PDF executivo mantendo o resumo do último mês e adicionando consolidado do período."""
     try:
         from reportlab.lib import colors
-        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
         from reportlab.lib.units import cm
         from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle, PageBreak
@@ -912,11 +912,11 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
         buffer,
-        pagesize=A4,
-        rightMargin=1.2*cm,
-        leftMargin=1.2*cm,
-        topMargin=1.0*cm,
-        bottomMargin=1.0*cm,
+        pagesize=landscape(A4),
+        rightMargin=1.0*cm,
+        leftMargin=1.0*cm,
+        topMargin=0.8*cm,
+        bottomMargin=0.8*cm,
     )
     styles = getSampleStyleSheet()
     styles.add(ParagraphStyle(name="EiroxSmall", parent=styles["Normal"], fontSize=8, leading=10, textColor=colors.HexColor("#4F5F70")))
@@ -949,7 +949,7 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
         ["Lucro Líquido", brl(valor_linha(dados, "LUCRO LÍQUIDO", ultimo)), pct(pct_linha(dados, "LUCRO LÍQUIDO", ultimo))],
         ["Posição Final Caixa", brl(valor_linha(dados, "POSIÇÃO FINAL", ultimo)), pct(pct_linha(dados, "POSIÇÃO FINAL", ultimo))],
     ]
-    elementos.append(estilo_tabela(Table(linhas, colWidths=[8*cm, 4*cm, 3*cm])))
+    elementos.append(estilo_tabela(Table(linhas, colWidths=[11.5*cm, 6*cm, 4*cm])))
     elementos.append(Spacer(1, 0.5*cm))
 
     elementos.append(Paragraph("Resumo Farmacêutico do Último Mês", styles["Heading2"]))
@@ -967,7 +967,7 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
         ["Despesa Operacional %", pct(despesas_op/receita if receita else 0)],
         ["EBITDA %", pct(pct_linha(dados, "EBITDA", ultimo))],
     ]
-    elementos.append(estilo_tabela(Table(farmacia, colWidths=[8*cm, 7*cm])))
+    elementos.append(estilo_tabela(Table(farmacia, colWidths=[11.5*cm, 10*cm])))
 
     # =====================================================
     # Página 2 — consolidado do período
@@ -997,7 +997,7 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
         ["Margem Líquida Consolidada", pct(ratio_total(lucro_liq_total, receita_total)), ""],
         ["Capital de Giro Médio", brl(capital_giro_medio), ""],
     ]
-    elementos.append(estilo_tabela(Table(consolidado, colWidths=[8*cm, 4*cm, 3*cm])))
+    elementos.append(estilo_tabela(Table(consolidado, colWidths=[11.5*cm, 6*cm, 4*cm])))
     elementos.append(Spacer(1, 0.55*cm))
 
     elementos.append(Paragraph("Evolução Mensal", styles["Heading2"]))
@@ -1009,8 +1009,8 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
         ["Lucro Líquido"] + [brl(valor_linha(dados, "LUCRO LÍQUIDO", m)) for m in meses],
         ["Caixa Final"] + [brl(valor_linha(dados, "POSIÇÃO FINAL", m)) for m in meses],
     ]
-    largura_primeira = 4.2*cm
-    largura_mes = max(2.0*cm, (15.5*cm - largura_primeira) / max(len(meses), 1))
+    largura_primeira = 5.2*cm
+    largura_mes = max(2.6*cm, (25.0*cm - largura_primeira) / max(len(meses), 1))
     elementos.append(estilo_tabela(Table([evol_header] + evol_linhas, colWidths=[largura_primeira] + [largura_mes]*len(meses))))
 
     # =====================================================
@@ -1035,7 +1035,7 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
         ["Despesa Operacional % Consolidada", pct(ratio_total(despesas_total, receita_total))],
         ["EBITDA % Consolidado", pct(ratio_total(ebitda_total, receita_total))],
     ]
-    elementos.append(estilo_tabela(Table(farm_consolidado, colWidths=[8*cm, 7*cm])))
+    elementos.append(estilo_tabela(Table(farm_consolidado, colWidths=[11.5*cm, 10*cm])))
     elementos.append(Spacer(1, 0.55*cm))
 
     margem_ebitda = ratio_total(ebitda_total, receita_total)
