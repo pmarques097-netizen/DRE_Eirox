@@ -1072,6 +1072,152 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
     doc.build(elementos)
     return buffer.getvalue()
 
+
+def gerar_excel_executivo(dados: pd.DataFrame, meses: list[str], checks: pd.DataFrame | None = None, nao_classificados: pd.DataFrame | None = None) -> bytes:
+    """Gera Excel executivo com Painel CEO, DRE completo, evolução mensal, indicadores farmacêuticos e auditoria."""
+    buffer = io.BytesIO()
+    ultimo = meses[-1]
+
+    def linha_periodo(nome: str, busca: str) -> dict:
+        valores = [valor_linha(dados, busca, m) for m in meses]
+        total = sum(valores)
+        return {"Indicador": nome, **{m: valores[i] for i, m in enumerate(meses)}, "Total/Consolidado": total}
+
+    receita_total = sum(valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m) for m in meses)
+    lucro_bruto_total = sum(valor_linha(dados, "LUCRO BRUTO", m) for m in meses)
+    ebitda_total = sum(valor_linha(dados, "EBITDA", m) for m in meses)
+    lucro_liq_total = sum(valor_linha(dados, "LUCRO LÍQUIDO", m) for m in meses)
+    posicao_final = valor_linha(dados, "POSIÇÃO FINAL", ultimo)
+
+    painel_ceo = pd.DataFrame([
+        {"Indicador": "Receita Total", "Valor": receita_total, "% Receita": 1.0},
+        {"Indicador": "Lucro Bruto", "Valor": lucro_bruto_total, "% Receita": (lucro_bruto_total / receita_total if receita_total else 0)},
+        {"Indicador": "EBITDA", "Valor": ebitda_total, "% Receita": (ebitda_total / receita_total if receita_total else 0)},
+        {"Indicador": "Lucro Líquido", "Valor": lucro_liq_total, "% Receita": (lucro_liq_total / receita_total if receita_total else 0)},
+        {"Indicador": "Posição Final Caixa", "Valor": posicao_final, "% Receita": (posicao_final / receita_total if receita_total else 0)},
+        {"Indicador": "Margem EBITDA", "Valor": ebitda_total / receita_total if receita_total else 0, "% Receita": ebitda_total / receita_total if receita_total else 0},
+        {"Indicador": "Margem Líquida", "Valor": lucro_liq_total / receita_total if receita_total else 0, "% Receita": lucro_liq_total / receita_total if receita_total else 0},
+    ])
+
+    evolucao = pd.DataFrame([
+        linha_periodo("Receita Bruta", "RECEITA OPERACIONAL BRUTA"),
+        linha_periodo("Receita Líquida", "RECEITA OPERACIONAL LÍQUIDA"),
+        linha_periodo("Lucro Bruto", "LUCRO BRUTO"),
+        linha_periodo("EBITDA", "EBITDA"),
+        linha_periodo("Lucro Líquido", "LUCRO LÍQUIDO"),
+        linha_periodo("Posição Final", "POSIÇÃO FINAL"),
+        linha_periodo("Estoque a Custo", "ESTOQUE A CUSTO"),
+        linha_periodo("CMV", "CUSTOS DAS VENDAS"),
+        linha_periodo("Despesas Operacionais", "DESPESAS OPERACIONAIS"),
+    ])
+
+    estoque_vals = [valor_linha(dados, "ESTOQUE A CUSTO", m) for m in meses]
+    receita_vals = [valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m) for m in meses]
+    cmv_vals = [valor_linha(dados, "CUSTOS DAS VENDAS", m) for m in meses]
+    desp_vals = [valor_linha(dados, "DESPESAS OPERACIONAIS", m) for m in meses]
+    ebitda_vals = [valor_linha(dados, "EBITDA", m) for m in meses]
+    pos_vals = [valor_linha(dados, "POSIÇÃO FINAL", m) for m in meses]
+
+    def media_segura(vals):
+        vals = [v for v in vals if v is not None]
+        return sum(vals) / len(vals) if vals else 0
+
+    indicadores_farma = pd.DataFrame([
+        {"Indicador": "Estoque / Receita", **{m: (estoque_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": media_segura([(estoque_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i in range(len(meses))])},
+        {"Indicador": "Dias de Estoque", **{m: (estoque_vals[i] / cmv_vals[i] * 30 if cmv_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": media_segura([(estoque_vals[i] / cmv_vals[i] * 30 if cmv_vals[i] else 0) for i in range(len(meses))])},
+        {"Indicador": "Capital de Giro", **{m: estoque_vals[i] - pos_vals[i] for i, m in enumerate(meses)}, "Média/Consolidado": media_segura([estoque_vals[i] - pos_vals[i] for i in range(len(meses))])},
+        {"Indicador": "CMV %", **{m: (cmv_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": (sum(cmv_vals) / sum(receita_vals) if sum(receita_vals) else 0)},
+        {"Indicador": "Despesa Operacional %", **{m: (desp_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": (sum(desp_vals) / sum(receita_vals) if sum(receita_vals) else 0)},
+        {"Indicador": "EBITDA %", **{m: (ebitda_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": (sum(ebitda_vals) / sum(receita_vals) if sum(receita_vals) else 0)},
+    ])
+
+    # DRE completo em formato largo, igual ao dashboard.
+    ordem = dados[["Ordem", "Seção", "Linha DRE", "Nível", "Tipo"]].drop_duplicates().sort_values("Ordem")
+    dre_rows = []
+    for _, row in ordem.iterrows():
+        out = {
+            "Ordem": row["Ordem"],
+            "Seção": row["Seção"],
+            "Linha DRE": row["Linha DRE"],
+            "Nível": row["Nível"],
+            "Tipo": row["Tipo"],
+        }
+        for m in meses:
+            rec = dados[(dados["Ordem"] == row["Ordem"]) & (dados["Mês"] == m)]
+            out[f"{m} Valor"] = float(rec["Valor"].iloc[0]) if not rec.empty else 0.0
+            out[f"{m} %"] = float(rec["% Receita"].iloc[0]) if not rec.empty else 0.0
+        dre_rows.append(out)
+    dre_completo = pd.DataFrame(dre_rows)
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        painel_ceo.to_excel(writer, sheet_name="Painel CEO", index=False)
+        dre_completo.to_excel(writer, sheet_name="DRE Completo", index=False)
+        evolucao.to_excel(writer, sheet_name="Evolução Mensal", index=False)
+        indicadores_farma.to_excel(writer, sheet_name="Indicadores Farma", index=False)
+        if checks is not None and not checks.empty:
+            checks.to_excel(writer, sheet_name="Auditoria", index=False)
+        else:
+            pd.DataFrame([{"Checagem": "Sem auditoria disponível", "Valor": ""}]).to_excel(writer, sheet_name="Auditoria", index=False)
+        if nao_classificados is not None and not nao_classificados.empty:
+            nao_classificados.to_excel(writer, sheet_name="Não Classificados", index=False)
+
+        wb = writer.book
+        header_fill = "0B2B45"
+        header_font = "FFFFFF"
+        yellow_fill = "FFD21F"
+        blue_fill = "CFE3F8"
+        dark_fill = "1B2534"
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        thin = Side(style="thin", color="D5E2EF")
+        for ws in wb.worksheets:
+            ws.freeze_panes = "A2"
+            for cell in ws[1]:
+                cell.fill = PatternFill("solid", fgColor=header_fill)
+                cell.font = Font(color=header_font, bold=True)
+                cell.alignment = Alignment(horizontal="center")
+            for row in ws.iter_rows():
+                for cell in row:
+                    cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+                    if isinstance(cell.value, (int, float)):
+                        if "%" in str(ws.cell(1, cell.column).value) or "Margem" in str(ws.cell(cell.row, 1).value):
+                            cell.number_format = "0,00%"
+                        else:
+                            cell.number_format = 'R$ #.##0,00'
+            for col_idx, col in enumerate(ws.columns, start=1):
+                max_len = 0
+                for cell in col:
+                    max_len = max(max_len, len(str(cell.value)) if cell.value is not None else 0)
+                ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 12), 42)
+
+        if "DRE Completo" in wb.sheetnames:
+            ws = wb["DRE Completo"]
+            tipo_col = None
+            for c in range(1, ws.max_column + 1):
+                if ws.cell(1, c).value == "Tipo":
+                    tipo_col = c
+                    break
+            if tipo_col:
+                for r in range(2, ws.max_row + 1):
+                    tipo = str(ws.cell(r, tipo_col).value)
+                    fill = None
+                    font_color = "000000"
+                    if tipo == "resultado_amarelo":
+                        fill = PatternFill("solid", fgColor=yellow_fill)
+                    elif tipo == "subtotal_azul":
+                        fill = PatternFill("solid", fgColor=blue_fill)
+                    elif tipo in ["agrupador", "grupo_italico"]:
+                        fill = PatternFill("solid", fgColor=dark_fill)
+                        font_color = "FFFFFF"
+                    if fill:
+                        for c in range(1, ws.max_column + 1):
+                            ws.cell(r, c).fill = fill
+                            ws.cell(r, c).font = Font(bold=True, color=font_color)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
 # =========================================================
 # LOGIN
 # =========================================================
@@ -1299,17 +1445,28 @@ if pagina == "📊 Painel CEO":
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("<div class='section-title'>📥 Exportação Executiva</div>", unsafe_allow_html=True)
-    pdf_bytes = gerar_pdf_executivo(dados, meses_sel, logo_path)
-    if pdf_bytes:
+    col_pdf, col_excel = st.columns(2)
+    with col_pdf:
+        pdf_bytes = gerar_pdf_executivo(dados, meses_sel, logo_path)
+        if pdf_bytes:
+            st.download_button(
+                "📄 Exportar PDF Executivo",
+                data=pdf_bytes,
+                file_name=f"Relatorio_Executivo_DRE_Eirox_{ultimo_mes.replace('/', '_')}.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+            )
+        else:
+            st.warning("Para exportar em PDF no ambiente online, adicione reportlab ao requirements.txt.")
+    with col_excel:
+        excel_bytes = gerar_excel_executivo(dados, meses_sel, checks, nao_classificados)
         st.download_button(
-            "📥 Exportar Relatório Executivo PDF",
-            data=pdf_bytes,
-            file_name=f"Relatorio_Executivo_DRE_Eirox_{ultimo_mes.replace('/', '_')}.pdf",
-            mime="application/pdf",
+            "📊 Exportar Excel Executivo",
+            data=excel_bytes,
+            file_name=f"Relatorio_Executivo_DRE_Eirox_{ultimo_mes.replace('/', '_')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
         )
-    else:
-        st.warning("Para exportar em PDF no ambiente online, adicione reportlab ao requirements.txt.")
 
 elif pagina == "📑 DRE Gerencial":
     st.markdown("<div class='section-title'>📑 DRE Gerencial</div>", unsafe_allow_html=True)
