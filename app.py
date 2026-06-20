@@ -1073,148 +1073,358 @@ def gerar_pdf_executivo(dados: pd.DataFrame, meses: list[str], logo_path: Path |
     return buffer.getvalue()
 
 
-def gerar_excel_executivo(dados: pd.DataFrame, meses: list[str], checks: pd.DataFrame | None = None, nao_classificados: pd.DataFrame | None = None) -> bytes:
-    """Gera Excel executivo com Painel CEO, DRE completo, evolução mensal, indicadores farmacêuticos e auditoria."""
+def gerar_excel_executivo(dados: pd.DataFrame, meses: list[str], checks: pd.DataFrame | None = None, nao_classificados: pd.DataFrame | None = None, logo_path: Path | None = None) -> bytes:
+    """Gera Excel executivo visual, espelhando o dashboard Eirox: tema dark, logo, cards, DRE com destaques e abas premium."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.chart import LineChart, Reference
+    from openpyxl.drawing.image import Image as XLImage
+
     buffer = io.BytesIO()
     ultimo = meses[-1]
 
-    def linha_periodo(nome: str, busca: str) -> dict:
-        valores = [valor_linha(dados, busca, m) for m in meses]
-        total = sum(valores)
-        return {"Indicador": nome, **{m: valores[i] for i, m in enumerate(meses)}, "Total/Consolidado": total}
+    # Paleta Eirox / Dashboard
+    C_BG = "07111F"
+    C_PANEL = "0B1728"
+    C_PANEL2 = "10223A"
+    C_HEADER = "0B2B45"
+    C_LINE = "20334D"
+    C_BLUE = "CFE3F8"
+    C_YELLOW = "FFD21F"
+    C_GROUP = "1B2534"
+    C_WHITE = "FFFFFF"
+    C_MUTED = "9FB5CC"
+    C_GREEN = "32E875"
+    C_RED = "FF5470"
+    C_BLACK = "00101E"
 
-    receita_total = sum(valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m) for m in meses)
-    lucro_bruto_total = sum(valor_linha(dados, "LUCRO BRUTO", m) for m in meses)
-    ebitda_total = sum(valor_linha(dados, "EBITDA", m) for m in meses)
-    lucro_liq_total = sum(valor_linha(dados, "LUCRO LÍQUIDO", m) for m in meses)
-    posicao_final = valor_linha(dados, "POSIÇÃO FINAL", ultimo)
+    money_fmt = '"R$" #,##0.00'
+    pct_fmt = '0.00%'
+    num_fmt = '#,##0.00'
 
-    painel_ceo = pd.DataFrame([
-        {"Indicador": "Receita Total", "Valor": receita_total, "% Receita": 1.0},
-        {"Indicador": "Lucro Bruto", "Valor": lucro_bruto_total, "% Receita": (lucro_bruto_total / receita_total if receita_total else 0)},
-        {"Indicador": "EBITDA", "Valor": ebitda_total, "% Receita": (ebitda_total / receita_total if receita_total else 0)},
-        {"Indicador": "Lucro Líquido", "Valor": lucro_liq_total, "% Receita": (lucro_liq_total / receita_total if receita_total else 0)},
-        {"Indicador": "Posição Final Caixa", "Valor": posicao_final, "% Receita": (posicao_final / receita_total if receita_total else 0)},
-        {"Indicador": "Margem EBITDA", "Valor": ebitda_total / receita_total if receita_total else 0, "% Receita": ebitda_total / receita_total if receita_total else 0},
-        {"Indicador": "Margem Líquida", "Valor": lucro_liq_total / receita_total if receita_total else 0, "% Receita": lucro_liq_total / receita_total if receita_total else 0},
-    ])
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Painel CEO"
+    for name in ["DRE Gerencial", "Evolução Mensal", "Indicadores Farma", "Auditoria"]:
+        wb.create_sheet(name)
 
-    evolucao = pd.DataFrame([
-        linha_periodo("Receita Bruta", "RECEITA OPERACIONAL BRUTA"),
-        linha_periodo("Receita Líquida", "RECEITA OPERACIONAL LÍQUIDA"),
-        linha_periodo("Lucro Bruto", "LUCRO BRUTO"),
-        linha_periodo("EBITDA", "EBITDA"),
-        linha_periodo("Lucro Líquido", "LUCRO LÍQUIDO"),
-        linha_periodo("Posição Final", "POSIÇÃO FINAL"),
-        linha_periodo("Estoque a Custo", "ESTOQUE A CUSTO"),
-        linha_periodo("CMV", "CUSTOS DAS VENDAS"),
-        linha_periodo("Despesas Operacionais", "DESPESAS OPERACIONAIS"),
-    ])
+    thin = Side(style="thin", color=C_LINE)
+    light = Side(style="thin", color="D5E2EF")
 
-    estoque_vals = [valor_linha(dados, "ESTOQUE A CUSTO", m) for m in meses]
-    receita_vals = [valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m) for m in meses]
-    cmv_vals = [valor_linha(dados, "CUSTOS DAS VENDAS", m) for m in meses]
-    desp_vals = [valor_linha(dados, "DESPESAS OPERACIONAIS", m) for m in meses]
-    ebitda_vals = [valor_linha(dados, "EBITDA", m) for m in meses]
-    pos_vals = [valor_linha(dados, "POSIÇÃO FINAL", m) for m in meses]
+    def fill(color):
+        return PatternFill("solid", fgColor=color)
 
-    def media_segura(vals):
-        vals = [v for v in vals if v is not None]
-        return sum(vals) / len(vals) if vals else 0
+    def set_dark_sheet(ws):
+        ws.sheet_view.showGridLines = False
+        for r in range(1, 90):
+            for c in range(1, 22):
+                ws.cell(r, c).fill = fill(C_BG)
+                ws.cell(r, c).font = Font(color=C_WHITE, name="Calibri")
 
-    indicadores_farma = pd.DataFrame([
-        {"Indicador": "Estoque / Receita", **{m: (estoque_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": media_segura([(estoque_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i in range(len(meses))])},
-        {"Indicador": "Dias de Estoque", **{m: (estoque_vals[i] / cmv_vals[i] * 30 if cmv_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": media_segura([(estoque_vals[i] / cmv_vals[i] * 30 if cmv_vals[i] else 0) for i in range(len(meses))])},
-        {"Indicador": "Capital de Giro", **{m: estoque_vals[i] - pos_vals[i] for i, m in enumerate(meses)}, "Média/Consolidado": media_segura([estoque_vals[i] - pos_vals[i] for i in range(len(meses))])},
-        {"Indicador": "CMV %", **{m: (cmv_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": (sum(cmv_vals) / sum(receita_vals) if sum(receita_vals) else 0)},
-        {"Indicador": "Despesa Operacional %", **{m: (desp_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": (sum(desp_vals) / sum(receita_vals) if sum(receita_vals) else 0)},
-        {"Indicador": "EBITDA %", **{m: (ebitda_vals[i] / receita_vals[i] if receita_vals[i] else 0) for i, m in enumerate(meses)}, "Média/Consolidado": (sum(ebitda_vals) / sum(receita_vals) if sum(receita_vals) else 0)},
-    ])
+    def add_logo(ws, cell="A1", width=135):
+        if logo_path and Path(logo_path).exists():
+            try:
+                img = XLImage(str(logo_path))
+                img.width = width
+                img.height = int(width * 0.32)
+                ws.add_image(img, cell)
+            except Exception:
+                pass
 
-    # DRE completo em formato largo, igual ao dashboard.
+    def title(ws, text, subtitle=None):
+        ws.merge_cells("A1:H2")
+        ws["A1"] = text
+        ws["A1"].font = Font(color=C_WHITE, bold=True, size=24)
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+        ws.merge_cells("A3:H3")
+        ws["A3"] = subtitle or "EIROX FINANCIAL ANALYTICS"
+        ws["A3"].font = Font(color="6CC7FF", bold=True, size=11)
+        ws["A3"].alignment = Alignment(horizontal="center")
+        for row in range(1, 4):
+            for col in range(1, 9):
+                ws.cell(row, col).fill = fill(C_PANEL)
+                ws.cell(row, col).border = Border(bottom=thin)
+
+    def style_cell(cell, bg=C_PANEL, font=C_WHITE, bold=False, size=11, align="left", numfmt=None):
+        cell.fill = fill(bg)
+        cell.font = Font(color=font, bold=bold, size=size, name="Calibri")
+        cell.alignment = Alignment(horizontal=align, vertical="center")
+        cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        if numfmt:
+            cell.number_format = numfmt
+
+    def card(ws, row, col, label, value, pct_value=None, color=C_PANEL2):
+        ws.merge_cells(start_row=row, start_column=col, end_row=row+2, end_column=col+1)
+        c = ws.cell(row, col)
+        c.value = f"{label}\n{value}" + (f"\n{pct_value}" if pct_value else "")
+        c.fill = fill(color)
+        c.font = Font(color=C_WHITE, bold=True, size=13)
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    def valor(busca, mes=ultimo):
+        return valor_linha(dados, busca, mes)
+
+    def porcent(busca, mes=ultimo):
+        return pct_linha(dados, busca, mes)
+
+    def soma(busca):
+        return sum(valor_linha(dados, busca, m) for m in meses)
+
+    def ratio(a, b):
+        return a / b if b else 0
+
+    # =====================================================
+    # Aba Painel CEO
+    # =====================================================
+    ws = wb["Painel CEO"]
+    set_dark_sheet(ws)
+    add_logo(ws, "A1", 120)
+    title(ws, "DRE Empresa Online", f"Painel CEO Premium • Período: {meses[0]} a {meses[-1]} • Gerado em {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+
+    receita = valor("RECEITA OPERACIONAL BRUTA")
+    lucro_bruto = valor("LUCRO BRUTO")
+    ebitda = valor("EBITDA")
+    lucro_liq = valor("LUCRO LÍQUIDO")
+    caixa = valor("POSIÇÃO FINAL")
+    margem_ebitda = ratio(ebitda, receita)
+    margem_liq = ratio(lucro_liq, receita)
+
+    cards = [
+        ("Receita Total", brl(receita), "100,00%"),
+        ("Lucro Bruto", brl(lucro_bruto), pct(ratio(lucro_bruto, receita))),
+        ("EBITDA", brl(ebitda), pct(margem_ebitda)),
+        ("Lucro Líquido", brl(lucro_liq), pct(margem_liq)),
+        ("Posição Final Caixa", brl(caixa), pct(ratio(caixa, receita))),
+        ("Margem EBITDA", pct(margem_ebitda), None),
+        ("Margem Líquida", pct(margem_liq), None),
+    ]
+    pos = [(5,1),(5,3),(5,5),(5,7),(9,1),(9,3),(9,5)]
+    for (r,c), (lab,val,pc) in zip(pos, cards):
+        card(ws, r, c, lab, val, pc)
+
+    ws["A14"] = "Comparativo Mensal"
+    style_cell(ws["A14"], C_HEADER, C_WHITE, True, 14)
+    ws.merge_cells("A14:H14")
+    headers = ["Indicador", "Mês Anterior", "Último Mês", "Variação", "Tendência"]
+    for i, h in enumerate(headers, 1):
+        style_cell(ws.cell(15, i), C_HEADER, C_WHITE, True, 11, "center")
+    comparativos = [
+        ("Receita", "RECEITA OPERACIONAL BRUTA"),
+        ("Lucro Bruto", "LUCRO BRUTO"),
+        ("EBITDA", "EBITDA"),
+        ("Lucro Líquido", "LUCRO LÍQUIDO"),
+        ("Caixa Final", "POSIÇÃO FINAL"),
+    ]
+    ant = meses[-2] if len(meses) > 1 else meses[-1]
+    for idx, (lab, busca) in enumerate(comparativos, 16):
+        v_ant = valor_linha(dados, busca, ant)
+        v_atual = valor_linha(dados, busca, ultimo)
+        delta = (v_atual - v_ant) / abs(v_ant) if v_ant else 0
+        tendencia = "▲" if delta >= 0 else "▼"
+        vals = [lab, v_ant, v_atual, delta, tendencia]
+        for col, x in enumerate(vals, 1):
+            cell = ws.cell(idx, col, x)
+            style_cell(cell, C_PANEL, C_WHITE, col == 1, 11, "right" if col in [2,3,4] else "center")
+            if col in [2,3]: cell.number_format = money_fmt
+            if col == 4: cell.number_format = pct_fmt
+            if col == 5:
+                cell.font = Font(color=C_GREEN if delta >= 0 else C_RED, bold=True, size=14)
+
+    ws["A23"] = "Semáforo Financeiro"
+    style_cell(ws["A23"], C_HEADER, C_WHITE, True, 14)
+    ws.merge_cells("A23:H23")
+    semaforos = [
+        ("Margem", margem_ebitda, "Saudável" if margem_ebitda >= .10 else "Atenção" if margem_ebitda >= .05 else "Crítico"),
+        ("Caixa", caixa, "Saudável" if caixa > 0 else "Crítico"),
+        ("Estoque", ratio(valor("ESTOQUE A CUSTO"), receita), "Saudável" if ratio(valor("ESTOQUE A CUSTO"), receita) <= 2.2 else "Atenção"),
+        ("Despesas", porcent("DESPESAS OPERACIONAIS"), "Saudável" if porcent("DESPESAS OPERACIONAIS") <= .28 else "Atenção" if porcent("DESPESAS OPERACIONAIS") <= .35 else "Crítico"),
+    ]
+    for j, (lab, valx, status) in enumerate(semaforos, 1):
+        col = 1 + (j-1)*2
+        cor = C_GREEN if status == "Saudável" else C_YELLOW if status == "Atenção" else C_RED
+        card(ws, 25, col, lab, status, None, color=C_PANEL2)
+        ws.cell(25, col).font = Font(color=cor, bold=True, size=13)
+
+    for col in range(1, 9):
+        ws.column_dimensions[get_column_letter(col)].width = 20
+    ws.row_dimensions[1].height = 28
+    ws.freeze_panes = "A15"
+
+    # =====================================================
+    # Aba DRE Gerencial — igual ao dashboard
+    # =====================================================
+    ws = wb["DRE Gerencial"]
+    set_dark_sheet(ws)
+    add_logo(ws, "A1", 110)
+    title(ws, "DRE Gerencial", "Modelo completo: DRE + Conciliação de Fluxo de Caixa + Indicadores + Ponto de Equilíbrio")
+
+    start_row = 5
+    headers = ["Linha DRE"] + [x for m in meses for x in [f"{m} Valor", f"{m} %"]]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(start_row, c, h)
+        style_cell(cell, "141B27", "C9D3DF", True, 11, "right" if c > 1 else "left")
+
     ordem = dados[["Ordem", "Seção", "Linha DRE", "Nível", "Tipo"]].drop_duplicates().sort_values("Ordem")
-    dre_rows = []
+    r = start_row + 1
     for _, row in ordem.iterrows():
-        out = {
-            "Ordem": row["Ordem"],
-            "Seção": row["Seção"],
-            "Linha DRE": row["Linha DRE"],
-            "Nível": row["Nível"],
-            "Tipo": row["Tipo"],
-        }
+        linha = row["Linha DRE"]
+        tipo = row["Tipo"] if row["Tipo"] in ["subtotal_azul", "resultado_amarelo", "agrupador", "grupo_italico"] else "detalhe"
+        nivel = int(row.get("Nível", 0))
+        if tipo == "resultado_amarelo": bg, fc, bold = C_YELLOW, C_BLACK, True
+        elif tipo == "subtotal_azul": bg, fc, bold = C_BLUE, C_BLACK, True
+        elif tipo in ["agrupador", "grupo_italico"]: bg, fc, bold = C_GROUP, C_WHITE, True
+        else: bg, fc, bold = C_PANEL, C_WHITE, False
+        c0 = ws.cell(r, 1, linha)
+        style_cell(c0, bg, fc, bold, 11, "left")
+        c0.alignment = Alignment(horizontal="left", vertical="center", indent=nivel, wrap_text=True)
+        col = 2
         for m in meses:
             rec = dados[(dados["Ordem"] == row["Ordem"]) & (dados["Mês"] == m)]
-            out[f"{m} Valor"] = float(rec["Valor"].iloc[0]) if not rec.empty else 0.0
-            out[f"{m} %"] = float(rec["% Receita"].iloc[0]) if not rec.empty else 0.0
-        dre_rows.append(out)
-    dre_completo = pd.DataFrame(dre_rows)
+            val = float(rec["Valor"].iloc[0]) if not rec.empty else 0.0
+            prc = float(rec["% Receita"].iloc[0]) if not rec.empty else 0.0
+            cell_v = ws.cell(r, col, val)
+            cell_p = ws.cell(r, col+1, prc)
+            style_cell(cell_v, bg, fc, bold, 11, "right", money_fmt)
+            style_cell(cell_p, bg, fc, bold, 11, "right", pct_fmt)
+            if "MARGEM DE CONTRIBUIÇÃO PERCENTUAL" in str(linha).upper():
+                cell_v.number_format = pct_fmt
+            col += 2
+        ws.row_dimensions[r].height = 28 if tipo in ["subtotal_azul", "resultado_amarelo"] else 23
+        r += 1
+    ws.freeze_panes = "B6"
+    ws.auto_filter.ref = f"A5:{get_column_letter(len(headers))}{r-1}"
+    ws.column_dimensions["A"].width = 56
+    for c in range(2, len(headers)+1):
+        ws.column_dimensions[get_column_letter(c)].width = 17 if c % 2 == 0 else 11
 
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        painel_ceo.to_excel(writer, sheet_name="Painel CEO", index=False)
-        dre_completo.to_excel(writer, sheet_name="DRE Completo", index=False)
-        evolucao.to_excel(writer, sheet_name="Evolução Mensal", index=False)
-        indicadores_farma.to_excel(writer, sheet_name="Indicadores Farma", index=False)
-        if checks is not None and not checks.empty:
-            checks.to_excel(writer, sheet_name="Auditoria", index=False)
-        else:
-            pd.DataFrame([{"Checagem": "Sem auditoria disponível", "Valor": ""}]).to_excel(writer, sheet_name="Auditoria", index=False)
-        if nao_classificados is not None and not nao_classificados.empty:
-            nao_classificados.to_excel(writer, sheet_name="Não Classificados", index=False)
+    # =====================================================
+    # Aba Evolução Mensal com gráfico
+    # =====================================================
+    ws = wb["Evolução Mensal"]
+    set_dark_sheet(ws)
+    add_logo(ws, "A1", 105)
+    title(ws, "Evolução Mensal", f"Indicadores de {meses[0]} a {meses[-1]}")
+    indicadores = [
+        ("Receita Bruta", "RECEITA OPERACIONAL BRUTA"),
+        ("Lucro Bruto", "LUCRO BRUTO"),
+        ("EBITDA", "EBITDA"),
+        ("Lucro Líquido", "LUCRO LÍQUIDO"),
+        ("Posição Final", "POSIÇÃO FINAL"),
+        ("Estoque a Custo", "ESTOQUE A CUSTO"),
+    ]
+    header = ["Indicador"] + meses + ["Total/Consolidado"]
+    for c, h in enumerate(header, 1):
+        style_cell(ws.cell(5, c, h), C_HEADER, C_WHITE, True, 11, "center")
+    for r_idx, (lab, busca) in enumerate(indicadores, 6):
+        style_cell(ws.cell(r_idx, 1, lab), C_PANEL, C_WHITE, True)
+        total = 0
+        for i, m in enumerate(meses, 2):
+            valm = valor_linha(dados, busca, m)
+            total += valm
+            style_cell(ws.cell(r_idx, i, valm), C_PANEL, C_WHITE, False, 11, "right", money_fmt)
+        style_cell(ws.cell(r_idx, len(meses)+2, total), C_PANEL2, C_WHITE, True, 11, "right", money_fmt)
+    ws.freeze_panes = "B6"
+    ws.column_dimensions["A"].width = 24
+    for c in range(2, len(header)+1): ws.column_dimensions[get_column_letter(c)].width = 16
+    try:
+        chart = LineChart()
+        chart.title = "Evolução dos Indicadores"
+        chart.y_axis.title = "Valor"
+        chart.x_axis.title = "Mês"
+        data = Reference(ws, min_col=2, max_col=1+len(meses), min_row=5, max_row=10)
+        cats = Reference(ws, min_col=2, max_col=1+len(meses), min_row=5, max_row=5)
+        chart.add_data(data, titles_from_data=False, from_rows=True)
+        chart.set_categories(cats)
+        chart.height = 10
+        chart.width = 24
+        ws.add_chart(chart, "A15")
+    except Exception:
+        pass
 
-        wb = writer.book
-        header_fill = "0B2B45"
-        header_font = "FFFFFF"
-        yellow_fill = "FFD21F"
-        blue_fill = "CFE3F8"
-        dark_fill = "1B2534"
-        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-        from openpyxl.utils import get_column_letter
+    # =====================================================
+    # Aba Indicadores Farma
+    # =====================================================
+    ws = wb["Indicadores Farma"]
+    set_dark_sheet(ws)
+    add_logo(ws, "A1", 105)
+    title(ws, "Dashboard Farmacêutico", "Indicadores específicos para rede de farmácias")
+    indicadores_farma = [
+        ("Estoque / Receita", lambda m: ratio(valor_linha(dados, "ESTOQUE A CUSTO", m), valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m)), "0.00x"),
+        ("Dias de Estoque", lambda m: ratio(valor_linha(dados, "ESTOQUE A CUSTO", m), valor_linha(dados, "CUSTOS DAS VENDAS", m)) * 30 if valor_linha(dados, "CUSTOS DAS VENDAS", m) else 0, '0.0 "dias"'),
+        ("Capital de Giro", lambda m: valor_linha(dados, "ESTOQUE A CUSTO", m) - valor_linha(dados, "POSIÇÃO FINAL", m), money_fmt),
+        ("CMV %", lambda m: ratio(valor_linha(dados, "CUSTOS DAS VENDAS", m), valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m)), pct_fmt),
+        ("Despesa Operacional %", lambda m: ratio(valor_linha(dados, "DESPESAS OPERACIONAIS", m), valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m)), pct_fmt),
+        ("EBITDA %", lambda m: ratio(valor_linha(dados, "EBITDA", m), valor_linha(dados, "RECEITA OPERACIONAL BRUTA", m)), pct_fmt),
+    ]
+    header = ["Indicador"] + meses + ["Média/Consolidado"]
+    for c, h in enumerate(header, 1):
+        style_cell(ws.cell(5, c, h), C_HEADER, C_WHITE, True, 11, "center")
+    for r_idx, (lab, fn, fmt) in enumerate(indicadores_farma, 6):
+        vals = [fn(m) for m in meses]
+        media = sum(vals) / len(vals) if vals else 0
+        style_cell(ws.cell(r_idx, 1, lab), C_PANEL, C_WHITE, True)
+        for i, v in enumerate(vals, 2):
+            style_cell(ws.cell(r_idx, i, v), C_PANEL, C_WHITE, False, 11, "right", fmt)
+        style_cell(ws.cell(r_idx, len(meses)+2, media), C_PANEL2, C_WHITE, True, 11, "right", fmt)
+    ws.freeze_panes = "B6"
+    ws.column_dimensions["A"].width = 26
+    for c in range(2, len(header)+1): ws.column_dimensions[get_column_letter(c)].width = 16
 
-        thin = Side(style="thin", color="D5E2EF")
-        for ws in wb.worksheets:
-            ws.freeze_panes = "A2"
-            for cell in ws[1]:
-                cell.fill = PatternFill("solid", fgColor=header_fill)
-                cell.font = Font(color=header_font, bold=True)
-                cell.alignment = Alignment(horizontal="center")
-            for row in ws.iter_rows():
-                for cell in row:
-                    cell.border = Border(left=thin, right=thin, top=thin, bottom=thin)
-                    if isinstance(cell.value, (int, float)):
-                        if "%" in str(ws.cell(1, cell.column).value) or "Margem" in str(ws.cell(cell.row, 1).value):
-                            cell.number_format = "0,00%"
-                        else:
-                            cell.number_format = 'R$ #.##0,00'
-            for col_idx, col in enumerate(ws.columns, start=1):
-                max_len = 0
-                for cell in col:
-                    max_len = max(max_len, len(str(cell.value)) if cell.value is not None else 0)
-                ws.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 12), 42)
+    # =====================================================
+    # Aba Auditoria
+    # =====================================================
+    ws = wb["Auditoria"]
+    set_dark_sheet(ws)
+    add_logo(ws, "A1", 105)
+    title(ws, "Auditoria DRE", "Checagem das bases e itens não classificados")
+    row = 5
+    for c, h in enumerate(["Checagem", "Valor"], 1):
+        style_cell(ws.cell(row, c, h), C_HEADER, C_WHITE, True, 11, "center")
+    row += 1
+    if checks is not None and not checks.empty:
+        for _, rr in checks.iterrows():
+            style_cell(ws.cell(row, 1, rr.get("Checagem", "")), C_PANEL, C_WHITE, True)
+            style_cell(ws.cell(row, 2, rr.get("Valor", "")), C_PANEL, C_WHITE, False)
+            row += 1
+    else:
+        style_cell(ws.cell(row, 1, "Auditoria"), C_PANEL, C_WHITE, True)
+        style_cell(ws.cell(row, 2, "Sem auditoria disponível"), C_PANEL, C_WHITE, False)
+        row += 1
+    row += 2
+    ws.cell(row, 1, "Não Classificados")
+    style_cell(ws.cell(row, 1), C_HEADER, C_WHITE, True, 13)
+    ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=6)
+    row += 1
+    if nao_classificados is not None and not nao_classificados.empty:
+        cols = list(nao_classificados.columns)[:8]
+        for c, h in enumerate(cols, 1):
+            style_cell(ws.cell(row, c, h), C_HEADER, C_WHITE, True, 11, "center")
+        row += 1
+        for _, rr in nao_classificados.head(1000).iterrows():
+            for c, h in enumerate(cols, 1):
+                style_cell(ws.cell(row, c, rr.get(h, "")), C_PANEL, C_WHITE, False)
+            row += 1
+    else:
+        style_cell(ws.cell(row, 1, "Nenhum item não classificado encontrado."), C_PANEL, C_GREEN, True)
+    for c in range(1, 10):
+        ws.column_dimensions[get_column_letter(c)].width = 24
 
-        if "DRE Completo" in wb.sheetnames:
-            ws = wb["DRE Completo"]
-            tipo_col = None
-            for c in range(1, ws.max_column + 1):
-                if ws.cell(1, c).value == "Tipo":
-                    tipo_col = c
-                    break
-            if tipo_col:
-                for r in range(2, ws.max_row + 1):
-                    tipo = str(ws.cell(r, tipo_col).value)
-                    fill = None
-                    font_color = "000000"
-                    if tipo == "resultado_amarelo":
-                        fill = PatternFill("solid", fgColor=yellow_fill)
-                    elif tipo == "subtotal_azul":
-                        fill = PatternFill("solid", fgColor=blue_fill)
-                    elif tipo in ["agrupador", "grupo_italico"]:
-                        fill = PatternFill("solid", fgColor=dark_fill)
-                        font_color = "FFFFFF"
-                    if fill:
-                        for c in range(1, ws.max_column + 1):
-                            ws.cell(r, c).fill = fill
-                            ws.cell(r, c).font = Font(bold=True, color=font_color)
+    # Ajustes finais de impressão / página
+    for ws in wb.worksheets:
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.paperSize = ws.PAPERSIZE_A4
+        ws.page_margins.left = 0.25
+        ws.page_margins.right = 0.25
+        ws.page_margins.top = 0.35
+        ws.page_margins.bottom = 0.35
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
 
+    wb.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
 
@@ -1459,7 +1669,7 @@ if pagina == "📊 Painel CEO":
         else:
             st.warning("Para exportar em PDF no ambiente online, adicione reportlab ao requirements.txt.")
     with col_excel:
-        excel_bytes = gerar_excel_executivo(dados, meses_sel, checks, nao_classificados)
+        excel_bytes = gerar_excel_executivo(dados, meses_sel, checks, nao_classificados, logo_path)
         st.download_button(
             "📊 Exportar Excel Executivo",
             data=excel_bytes,
