@@ -18,8 +18,11 @@ Como executar:
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import io
 import re
+import time
 import unicodedata
 from datetime import datetime
 from pathlib import Path
@@ -79,6 +82,11 @@ USUARIOS = {
     "ubiratan": {"senha": "031730", "perfil": "visualizacao", "nome": "Ubiratan"},
     "vanderlei": {"senha": "031730", "perfil": "visualizacao", "nome": "Vanderlei"},
 }
+
+# Mantém o login ativo no mesmo navegador mesmo após recarregar/atualizar a página.
+# Altere este texto se quiser invalidar todos os logins salvos.
+LOGIN_SECRET = "EIROX_DRE_ENTERPRISE_PREMIUM_v2_2_031730"
+LOGIN_DURACAO_SEGUNDOS = 12 * 60 * 60  # 12 horas
 
 # =========================================================
 # ESTRUTURA DO DRE
@@ -1431,9 +1439,49 @@ def gerar_excel_executivo(dados: pd.DataFrame, meses: list[str], checks: pd.Data
 # =========================================================
 # LOGIN
 # =========================================================
+def criar_token_login(usuario: str) -> str:
+    usuario = str(usuario).strip().lower()
+    expira_em = int(time.time()) + LOGIN_DURACAO_SEGUNDOS
+    payload = f"{usuario}|{expira_em}"
+    assinatura = hmac.new(LOGIN_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{payload}|{assinatura}"
+
+
+def validar_token_login(token: str) -> str | None:
+    try:
+        usuario, expira_em, assinatura = str(token).split("|", 2)
+        payload = f"{usuario}|{expira_em}"
+        assinatura_correta = hmac.new(LOGIN_SECRET.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(assinatura, assinatura_correta):
+            return None
+        if int(expira_em) < int(time.time()):
+            return None
+        if usuario not in USUARIOS:
+            return None
+        return usuario
+    except Exception:
+        return None
+
+
+def autenticar_usuario(usuario: str):
+    user = USUARIOS[usuario]
+    st.session_state["autenticado"] = True
+    st.session_state["usuario"] = usuario
+    st.session_state["nome_usuario"] = user["nome"]
+    st.session_state["perfil"] = user["perfil"]
+
+
 def tela_login() -> bool:
     if st.session_state.get("autenticado", False):
         return True
+
+    # Se o usuário já entrou neste navegador, mantém o acesso durante o período definido.
+    token_salvo = st.query_params.get("auth", "")
+    usuario_token = validar_token_login(token_salvo) if token_salvo else None
+    if usuario_token:
+        autenticar_usuario(usuario_token)
+        return True
+
     logo_path_login = encontrar_arquivo(POSSIVEIS_LOGOS)
     logo_html = ""
     if logo_path_login:
@@ -1449,14 +1497,15 @@ def tela_login() -> bool:
     with st.form("form_login", clear_on_submit=False):
         usuario = st.text_input("Usuário")
         senha = st.text_input("Senha", type="password")
+        lembrar = st.checkbox("Manter conectado neste navegador", value=True)
         entrar = st.form_submit_button("Entrar")
     if entrar:
-        user = USUARIOS.get(str(usuario).strip().lower())
+        usuario_limpo = str(usuario).strip().lower()
+        user = USUARIOS.get(usuario_limpo)
         if user and senha == user["senha"]:
-            st.session_state["autenticado"] = True
-            st.session_state["usuario"] = str(usuario).strip().lower()
-            st.session_state["nome_usuario"] = user["nome"]
-            st.session_state["perfil"] = user["perfil"]
+            autenticar_usuario(usuario_limpo)
+            if lembrar:
+                st.query_params["auth"] = criar_token_login(usuario_limpo)
             st.rerun()
         else:
             st.error("Usuário ou senha inválidos.")
@@ -1471,6 +1520,7 @@ def botao_logout_sidebar():
     if st.sidebar.button("Sair", use_container_width=True):
         for k in ["autenticado", "usuario", "nome_usuario", "perfil"]:
             st.session_state.pop(k, None)
+        st.query_params.clear()
         st.rerun()
 
 tela_login()
