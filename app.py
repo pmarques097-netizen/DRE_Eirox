@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO DINÂMICA TOTAL - DRE EIROX ENTERPRISE PREMIUM v1.5
+VERSÃO DRE EIROX ENTERPRISE PREMIUM v2.3 - PLANO DE CONTAS CORRIGIDO
 
 Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as pastas:
 - CONTAS A PAGAR - DRE
@@ -393,6 +393,8 @@ def carregar_plano_contas(pasta: Path | None) -> pd.DataFrame:
     plano["Destino DRE Legenda"] = plano["Destino na DRE Estruturada"].fillna("").astype(str).str.strip()
     plano["Subgrupo Legenda"] = plano["Subgrupo"].fillna("").astype(str).str.strip()
     plano["Grupo Legenda"] = plano["Grupo"].fillna("").astype(str).str.strip()
+    col_conta_sistema = next((c for c in plano.columns if normalizar_texto(c) == "CONTA DO SISTEMA PLANO DE CONTAS"), None)
+    plano["Conta Sistema Legenda"] = plano[col_conta_sistema].fillna("").astype(str).str.strip() if col_conta_sistema else ""
     return plano.drop_duplicates("Plano_Normalizado")
 
 def carregar_vendas(pasta: Path | None) -> pd.DataFrame:
@@ -418,6 +420,36 @@ def carregar_vendas(pasta: Path | None) -> pd.DataFrame:
     vendas["Forma de Pagamento"] = vendas[col_forma] if col_forma else ""
     return vendas[["Mês", "Loja", "Valor Receita", "Forma de Pagamento", "Arquivo Origem"]]
 
+def destino_dre_padrao(destino_legenda: str, conta_sistema: str, plano_contas: str) -> str:
+    """Converte a legenda do plano de contas para as linhas oficiais do DRE.
+
+    A conta do sistema tem prioridade quando a descrição da coluna
+    'Destino na DRE Estruturada' é ambígua. Isso evita que contas como
+    11-COMISSOES + PREMIAÇÕES sejam desviadas para Salários/Outras despesas.
+    """
+    destino = str(destino_legenda or "").strip()
+    conta_norm = normalizar_texto(conta_sistema)
+    plano_norm = normalizar_texto(plano_contas)
+    origem_norm = f"{conta_norm} {plano_norm}".strip()
+
+    # Regras explícitas segundo o Plano de Contas da empresa.
+    if "COMISSOES" in origem_norm and ("PREMIACOES" in origem_norm or "PREMIACAO" in origem_norm):
+        return "Comissões e Premiações"
+
+    # Padroniza destinos com observações entre parênteses / alternativas,
+    # priorizando uma linha que já exista no template oficial do DRE.
+    linhas_template = [linha for _, _, linha, _, _ in DRE_TEMPLATE]
+    destino_norm = normalizar_texto(destino)
+    if destino_norm:
+        candidatos = sorted(linhas_template, key=lambda x: len(normalizar_texto(x)), reverse=True)
+        for linha in candidatos:
+            ln = normalizar_texto(linha)
+            if ln and (destino_norm == ln or destino_norm.startswith(ln + " ")):
+                return linha
+
+    return destino
+
+
 def carregar_contas(pasta: Path | None, plano: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     frames = []
     for arq in arquivos_excel(pasta):
@@ -440,7 +472,7 @@ def carregar_contas(pasta: Path | None, plano: pd.DataFrame) -> tuple[pd.DataFra
 
     if not plano.empty:
         contas = contas.merge(
-            plano[["Plano_Normalizado", "Destino DRE Legenda", "Subgrupo Legenda", "Grupo Legenda"]],
+            plano[["Plano_Normalizado", "Destino DRE Legenda", "Subgrupo Legenda", "Grupo Legenda", "Conta Sistema Legenda"]],
             on="Plano_Normalizado",
             how="left",
         )
@@ -448,8 +480,16 @@ def carregar_contas(pasta: Path | None, plano: pd.DataFrame) -> tuple[pd.DataFra
         contas["Destino DRE Legenda"] = ""
         contas["Subgrupo Legenda"] = ""
         contas["Grupo Legenda"] = ""
+        contas["Conta Sistema Legenda"] = ""
 
-    contas["Destino DRE"] = contas["Destino DRE Legenda"].fillna("").astype(str).str.strip()
+    contas["Destino DRE"] = contas.apply(
+        lambda r: destino_dre_padrao(
+            r.get("Destino DRE Legenda", ""),
+            r.get("Conta Sistema Legenda", ""),
+            r.get("Plano de Contas", ""),
+        ),
+        axis=1,
+    )
     contas.loc[contas["Destino DRE"] == "", "Destino DRE"] = "NÃO CLASSIFICADO"
 
     # Algumas despesas fiscais costumam chegar sem plano; tenta classificar por texto para reduzir não classificados.
@@ -1811,4 +1851,4 @@ elif pagina == "⚠️ Auditoria DRE":
             show["Valor"] = show["Valor"].apply(brl)
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • Plano de contas padronizado</div>", unsafe_allow_html=True)
