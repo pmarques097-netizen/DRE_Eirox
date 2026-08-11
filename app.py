@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO DRE EIROX ENTERPRISE PREMIUM v2.3 - PLANO DE CONTAS CORRIGIDO
+VERSÃO DRE EIROX ENTERPRISE PREMIUM v2.6 - AUDITORIA DE ACESSOS + TELEGRAM
 
 Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as pastas:
 - CONTAS A PAGAR - DRE
@@ -21,11 +21,16 @@ import base64
 import hashlib
 import hmac
 import io
+import os
+import csv
 import re
 import time
 import unicodedata
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -88,6 +93,157 @@ USUARIOS = {
 # Altere este texto se quiser invalidar todos os logins salvos.
 LOGIN_SECRET = "EIROX_DRE_ENTERPRISE_PREMIUM_v2_2_031730"
 LOGIN_DURACAO_SEGUNDOS = 12 * 60 * 60  # 12 horas
+
+
+# =========================================================
+# AUDITORIA DE ACESSOS + TELEGRAM
+# =========================================================
+# IMPORTANTE: no Streamlit Cloud, configure TELEGRAM_BOT_TOKEN e
+# TELEGRAM_CHAT_ID em Settings > Secrets. Não publique o token no GitHub.
+ACESSO_LOG_PATH = APP_DIR / "data" / "auditoria_acessos.csv"
+FUSO_RELATORIO = "America/Fortaleza"
+
+
+def agora_relatorio() -> datetime:
+    try:
+        return datetime.now(ZoneInfo(FUSO_RELATORIO))
+    except Exception:
+        return datetime.now()
+
+
+def obter_segredo(nome: str) -> str:
+    """Lê primeiro do Streamlit Secrets e depois de variável de ambiente."""
+    try:
+        valor = st.secrets.get(nome, "")
+        if valor:
+            return str(valor).strip()
+    except Exception:
+        pass
+    return str(os.getenv(nome, "")).strip()
+
+
+def telegram_configurado() -> bool:
+    return bool(obter_segredo("TELEGRAM_BOT_TOKEN") and obter_segredo("TELEGRAM_CHAT_ID"))
+
+
+def enviar_telegram(mensagem: str) -> tuple[bool, str]:
+    """Envia texto ao Telegram sem adicionar dependências externas ao projeto."""
+    token = obter_segredo("TELEGRAM_BOT_TOKEN")
+    chat_id = obter_segredo("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return False, "Telegram não configurado em st.secrets/variáveis de ambiente."
+    try:
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = urllib.parse.urlencode({
+            "chat_id": chat_id,
+            "text": mensagem[:4096],
+            "disable_web_page_preview": "true",
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, method="POST")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            if 200 <= int(resp.status) < 300:
+                return True, "Mensagem enviada."
+            return False, f"Telegram retornou HTTP {resp.status}."
+    except Exception as e:
+        return False, f"Falha no Telegram: {e}"
+
+
+def user_agent_atual() -> str:
+    try:
+        headers = st.context.headers
+        return str(headers.get("User-Agent", ""))[:250]
+    except Exception:
+        return ""
+
+
+def registrar_evento_acesso(usuario: str, evento: str, origem: str = "") -> None:
+    """Mantém trilha local de acessos; o Telegram é a trilha externa persistente."""
+    try:
+        ACESSO_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        user = USUARIOS.get(usuario, {})
+        linha = {
+            "DataHora": agora_relatorio().strftime("%Y-%m-%d %H:%M:%S"),
+            "Usuario": usuario,
+            "Nome": user.get("nome", usuario),
+            "Perfil": user.get("perfil", ""),
+            "Evento": evento,
+            "Origem": origem,
+            "Navegador": user_agent_atual(),
+        }
+        existe = ACESSO_LOG_PATH.exists() and ACESSO_LOG_PATH.stat().st_size > 0
+        with ACESSO_LOG_PATH.open("a", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=list(linha.keys()), delimiter=";")
+            if not existe:
+                writer.writeheader()
+            writer.writerow(linha)
+    except Exception:
+        # Auditoria não pode impedir o acesso ao DRE.
+        pass
+
+
+def ler_log_acessos() -> pd.DataFrame:
+    if not ACESSO_LOG_PATH.exists():
+        return pd.DataFrame(columns=["DataHora", "Usuario", "Nome", "Perfil", "Evento", "Origem", "Navegador"])
+    try:
+        df = pd.read_csv(ACESSO_LOG_PATH, sep=";", encoding="utf-8-sig", dtype=str).fillna("")
+        df["DataHora_dt"] = pd.to_datetime(df["DataHora"], errors="coerce")
+        return df.sort_values("DataHora_dt", ascending=False)
+    except Exception:
+        return pd.DataFrame(columns=["DataHora", "Usuario", "Nome", "Perfil", "Evento", "Origem", "Navegador"])
+
+
+def resumo_acessos_hoje() -> tuple[int, int]:
+    df = ler_log_acessos()
+    if df.empty:
+        return 0, 0
+    hoje = agora_relatorio().strftime("%Y-%m-%d")
+    logins = df[(df["DataHora"].astype(str).str.startswith(hoje)) & (df["Evento"].isin(["LOGIN", "ACESSO PERSISTENTE"]))]
+    return int(len(logins)), int(logins["Usuario"].nunique()) if not logins.empty else 0
+
+
+def mensagem_acesso(usuario: str, evento: str, origem: str) -> str:
+    user = USUARIOS.get(usuario, {})
+    acessos_hoje, usuarios_hoje = resumo_acessos_hoje()
+    return (
+        "🔐 EIROX DRE — ACESSO\n"
+        f"Usuário: {user.get('nome', usuario)} ({usuario})\n"
+        f"Perfil: {user.get('perfil', '')}\n"
+        f"Evento: {evento}\n"
+        f"Origem: {origem}\n"
+        f"Data/Hora: {agora_relatorio().strftime('%d/%m/%Y %H:%M:%S')}\n"
+        f"Acessos hoje: {acessos_hoje}\n"
+        f"Usuários distintos hoje: {usuarios_hoje}"
+    )
+
+
+def registrar_e_notificar_acesso(usuario: str, evento: str, origem: str) -> None:
+    chave = f"acesso_notificado_{usuario}_{evento}"
+    if st.session_state.get(chave, False):
+        return
+    registrar_evento_acesso(usuario, evento, origem)
+    enviar_telegram(mensagem_acesso(usuario, evento, origem))
+    st.session_state[chave] = True
+
+
+def gerar_relatorio_acessos_texto() -> str:
+    df = ler_log_acessos()
+    agora = agora_relatorio()
+    hoje = agora.strftime("%Y-%m-%d")
+    if df.empty:
+        return f"📋 EIROX DRE — RELATÓRIO DE ACESSOS\nData: {agora.strftime('%d/%m/%Y %H:%M')}\nNenhum acesso registrado nesta instância."
+    logins = df[(df["DataHora"].astype(str).str.startswith(hoje)) & (df["Evento"].isin(["LOGIN", "ACESSO PERSISTENTE"]))].copy()
+    linhas = [
+        "📋 EIROX DRE — RELATÓRIO DE ACESSOS",
+        f"Data: {agora.strftime('%d/%m/%Y %H:%M')}",
+        f"Acessos hoje: {len(logins)}",
+        f"Usuários distintos: {logins['Usuario'].nunique() if not logins.empty else 0}",
+        "",
+        "Acessos mais recentes:",
+    ]
+    for _, r in logins.head(15).iterrows():
+        dh = str(r.get("DataHora", ""))[11:19]
+        linhas.append(f"• {dh} — {r.get('Nome', '')} ({r.get('Usuario', '')}) — {r.get('Origem', '')}")
+    return "\n".join(linhas)[:4096]
 
 # =========================================================
 # ESTRUTURA DO DRE
@@ -1641,12 +1797,13 @@ def validar_token_login(token: str) -> str | None:
         return None
 
 
-def autenticar_usuario(usuario: str):
+def autenticar_usuario(usuario: str, origem: str = "LOGIN"):
     user = USUARIOS[usuario]
     st.session_state["autenticado"] = True
     st.session_state["usuario"] = usuario
     st.session_state["nome_usuario"] = user["nome"]
     st.session_state["perfil"] = user["perfil"]
+    registrar_e_notificar_acesso(usuario, "LOGIN" if origem == "LOGIN" else "ACESSO PERSISTENTE", origem)
 
 
 def tela_login() -> bool:
@@ -1657,7 +1814,7 @@ def tela_login() -> bool:
     token_salvo = st.query_params.get("auth", "")
     usuario_token = validar_token_login(token_salvo) if token_salvo else None
     if usuario_token:
-        autenticar_usuario(usuario_token)
+        autenticar_usuario(usuario_token, origem="TOKEN PERSISTENTE")
         return True
 
     logo_path_login = encontrar_arquivo(POSSIVEIS_LOGOS)
@@ -1681,7 +1838,7 @@ def tela_login() -> bool:
         usuario_limpo = str(usuario).strip().lower()
         user = USUARIOS.get(usuario_limpo)
         if user and senha == user["senha"]:
-            autenticar_usuario(usuario_limpo)
+            autenticar_usuario(usuario_limpo, origem="LOGIN")
             if lembrar:
                 st.query_params["auth"] = criar_token_login(usuario_limpo)
             st.rerun()
@@ -1696,6 +1853,12 @@ def botao_logout_sidebar():
     st.sidebar.caption(f"Usuário: {nome}")
     st.sidebar.caption(f"Perfil: {perfil}")
     if st.sidebar.button("Sair", use_container_width=True):
+        usuario_logout = st.session_state.get("usuario", "")
+        if usuario_logout:
+            registrar_evento_acesso(usuario_logout, "LOGOUT", "BOTÃO SAIR")
+            enviar_telegram(
+                f"🚪 EIROX DRE — SAÍDA\nUsuário: {st.session_state.get('nome_usuario', usuario_logout)} ({usuario_logout})\nData/Hora: {agora_relatorio().strftime('%d/%m/%Y %H:%M:%S')}"
+            )
         for k in ["autenticado", "usuario", "nome_usuario", "perfil"]:
             st.session_state.pop(k, None)
         st.query_params.clear()
@@ -2049,6 +2212,45 @@ elif pagina == "⚠️ Auditoria DRE":
             show_aud[col] = show_aud[col].apply(brl)
         st.dataframe(show_aud, use_container_width=True, hide_index=True, height=520)
 
+    # Auditoria de acessos disponível somente para administradores
+    if st.session_state.get("perfil") == "admin":
+        st.markdown("<div class='section-title'>🔐 Auditoria de Acessos</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-caption'>Quem acessou o DRE, horário de entrada e relatório instantâneo via Telegram.</div>", unsafe_allow_html=True)
+        log_acessos = ler_log_acessos()
+        hoje_txt = agora_relatorio().strftime("%Y-%m-%d")
+        if not log_acessos.empty:
+            logins_hoje = log_acessos[
+                log_acessos["DataHora"].astype(str).str.startswith(hoje_txt)
+                & log_acessos["Evento"].isin(["LOGIN", "ACESSO PERSISTENTE"])
+            ].copy()
+        else:
+            logins_hoje = log_acessos.copy()
+
+        a1, a2, a3 = st.columns(3)
+        with a1:
+            make_kpi("Acessos Hoje", str(len(logins_hoje)))
+        with a2:
+            make_kpi("Usuários Hoje", str(logins_hoje["Usuario"].nunique() if not logins_hoje.empty else 0))
+        with a3:
+            status_tg = "Ativo" if telegram_configurado() else "Não configurado"
+            make_kpi("Telegram", status_tg)
+
+        if telegram_configurado():
+            if st.button("📨 Enviar relatório de acessos ao Telegram", use_container_width=True):
+                ok_tg, msg_tg = enviar_telegram(gerar_relatorio_acessos_texto())
+                if ok_tg:
+                    st.success("Relatório de acessos enviado ao Telegram.")
+                else:
+                    st.error(msg_tg)
+        else:
+            st.warning("Configure TELEGRAM_BOT_TOKEN e TELEGRAM_CHAT_ID nos Secrets do Streamlit Cloud para receber as notificações.")
+
+        if not log_acessos.empty:
+            cols_log = [c for c in ["DataHora", "Usuario", "Nome", "Perfil", "Evento", "Origem"] if c in log_acessos.columns]
+            st.dataframe(log_acessos[cols_log].head(200), use_container_width=True, hide_index=True, height=360)
+        else:
+            st.info("Ainda não há acessos registrados nesta instância do aplicativo.")
+
     st.markdown("<div class='section-title'>⚠️ Itens não classificados</div>", unsafe_allow_html=True)
     if nao_classificados.empty:
         st.markdown("<div class='ok-box'>Nenhum item não classificado encontrado.</div>", unsafe_allow_html=True)
@@ -2068,4 +2270,4 @@ elif pagina == "⚠️ Auditoria DRE":
             show["Valor"] = show["Valor"].apply(brl)
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • Plano de contas padronizado • Auditoria 100% Contas a Pagar</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • Plano de contas padronizado • Auditoria 100% Contas a Pagar • Auditoria de Acessos</div>", unsafe_allow_html=True)
