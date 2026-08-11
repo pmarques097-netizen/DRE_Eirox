@@ -81,6 +81,7 @@ USUARIOS = {
     "admin": {"senha": "031730", "perfil": "admin", "nome": "Administrador"},
     "ubiratan": {"senha": "031730", "perfil": "visualizacao", "nome": "Ubiratan"},
     "vanderlei": {"senha": "031730", "perfil": "visualizacao", "nome": "Vanderlei"},
+    "castro": {"senha": "031730", "perfil": "visualizacao", "nome": "Castro"},
 }
 
 # Mantém o login ativo no mesmo navegador mesmo após recarregar/atualizar a página.
@@ -511,6 +512,143 @@ def carregar_contas(pasta: Path | None, plano: pd.DataFrame) -> tuple[pd.DataFra
         .rename(columns={"sum": "Valor", "count": "Qtde"})
     )
     return contas_class, nao
+
+
+
+def assinatura_pasta_excel(pasta: Path | None) -> str:
+    """Assinatura simples para invalidar o cache quando algum Excel da pasta mudar."""
+    if not pasta or not pasta.exists():
+        return "SEM_PASTA"
+    partes = []
+    for arq in arquivos_excel(pasta):
+        try:
+            stt = arq.stat()
+            partes.append(f"{arq.relative_to(pasta)}|{stt.st_size}|{stt.st_mtime_ns}")
+        except Exception:
+            partes.append(str(arq))
+    return "||".join(partes)
+
+
+@st.cache_data(show_spinner=False)
+def carregar_auditoria_planos_cache(
+    pasta_contas_str: str,
+    pasta_plano_str: str,
+    assinatura_contas: str,
+    assinatura_plano: str,
+) -> pd.DataFrame:
+    """Concilia 100% do CONTAS A PAGAR por Plano de Contas.
+
+    A assinatura das pastas faz o cache ser renovado automaticamente quando um
+    arquivo é incluído, removido, substituído ou alterado.
+    """
+    pasta_contas = Path(pasta_contas_str)
+    pasta_plano = Path(pasta_plano_str)
+    plano = carregar_plano_contas(pasta_plano)
+
+    frames = []
+    for arq in arquivos_excel(pasta_contas):
+        for df in read_all_sheets(arq):
+            cols = [str(c).strip() for c in df.columns]
+            df.columns = cols
+            if "Valor Documento" in cols and "Plano de Contas" in cols:
+                frames.append(df)
+
+    colunas_saida = [
+        "Plano de Contas", "Mês", "Loja", "Qtde Lançamentos",
+        "Valor no Contas a Pagar", "Valor Classificado", "Não Classificado",
+        "Destino DRE", "Na Legenda", "Diferença", "Status"
+    ]
+    if not frames:
+        return pd.DataFrame(columns=colunas_saida)
+
+    contas = pd.concat(frames, ignore_index=True)
+    contas.columns = [str(c).strip() for c in contas.columns]
+    col_data = "Data Pagamento" if "Data Pagamento" in contas.columns else ("Data Emissão" if "Data Emissão" in contas.columns else None)
+    col_loja = "Unidade" if "Unidade" in contas.columns else ("Loja" if "Loja" in contas.columns else None)
+
+    contas["Mês"] = contas[col_data].apply(month_label_from_date) if col_data else "Sem mês"
+    contas["Loja"] = contas[col_loja].fillna("").astype(str) if col_loja else ""
+    contas["Valor Documento"] = contas["Valor Documento"].apply(parse_float)
+    contas["Plano de Contas"] = contas["Plano de Contas"].fillna("").astype(str).str.strip()
+    contas["Plano_Normalizado"] = contas["Plano de Contas"].apply(normalizar_texto)
+
+    if not plano.empty:
+        cols_plano = ["Plano_Normalizado", "Destino DRE Legenda", "Subgrupo Legenda", "Grupo Legenda", "Conta Sistema Legenda"]
+        cols_plano = [c for c in cols_plano if c in plano.columns]
+        contas = contas.merge(plano[cols_plano], on="Plano_Normalizado", how="left", indicator="_merge_legenda")
+        contas["Na Legenda"] = contas["_merge_legenda"].eq("both").map({True: "Sim", False: "Não"})
+    else:
+        contas["Destino DRE Legenda"] = ""
+        contas["Subgrupo Legenda"] = ""
+        contas["Grupo Legenda"] = ""
+        contas["Conta Sistema Legenda"] = ""
+        contas["Na Legenda"] = "Não"
+
+    for col in ["Destino DRE Legenda", "Subgrupo Legenda", "Grupo Legenda", "Conta Sistema Legenda"]:
+        if col not in contas.columns:
+            contas[col] = ""
+
+    contas["Destino DRE"] = contas.apply(
+        lambda r: destino_dre_padrao(
+            r.get("Destino DRE Legenda", ""),
+            r.get("Conta Sistema Legenda", ""),
+            r.get("Plano de Contas", ""),
+        ),
+        axis=1,
+    )
+    contas["Destino DRE"] = contas["Destino DRE"].fillna("").astype(str).str.strip()
+    contas.loc[contas["Destino DRE"] == "", "Destino DRE"] = "NÃO CLASSIFICADO"
+
+    # Mesmas regras complementares utilizadas no processamento principal.
+    texto_busca = (
+        contas.get("Plano de Contas", pd.Series("", index=contas.index)).astype(str) + " " +
+        contas.get("Credor", pd.Series("", index=contas.index)).astype(str) + " " +
+        contas.get("Descrição", pd.Series("", index=contas.index)).astype(str)
+    ).apply(normalizar_texto)
+    contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("ICMS", na=False), "Destino DRE"] = "ICMS"
+    contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("DAS|SIMPLES", na=False, regex=True), "Destino DRE"] = "DAS"
+    contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("ISS", na=False), "Destino DRE"] = "ISSQN"
+
+    contas["Valor Classificado"] = contas["Valor Documento"].where(contas["Destino DRE"] != "NÃO CLASSIFICADO", 0.0)
+    contas["Não Classificado"] = contas["Valor Documento"].where(contas["Destino DRE"] == "NÃO CLASSIFICADO", 0.0)
+
+    def destinos_unicos(s: pd.Series) -> str:
+        vals = [str(x).strip() for x in s if str(x).strip()]
+        return " | ".join(sorted(dict.fromkeys(vals))) if vals else "NÃO CLASSIFICADO"
+
+    grp = (
+        contas.groupby(["Plano de Contas", "Mês", "Loja", "Na Legenda"], dropna=False)
+        .agg(
+            **{
+                "Qtde Lançamentos": ("Valor Documento", "size"),
+                "Valor no Contas a Pagar": ("Valor Documento", "sum"),
+                "Valor Classificado": ("Valor Classificado", "sum"),
+                "Não Classificado": ("Não Classificado", "sum"),
+                "Destino DRE": ("Destino DRE", destinos_unicos),
+            }
+        )
+        .reset_index()
+    )
+    grp["Diferença"] = grp["Valor no Contas a Pagar"] - grp["Valor Classificado"] - grp["Não Classificado"]
+    grp["Status"] = grp.apply(
+        lambda r: "🔴 DIVERGÊNCIA" if abs(float(r["Diferença"])) > 0.01
+        else ("🟡 NÃO CLASSIFICADO" if float(r["Não Classificado"]) != 0 else "🟢 OK"),
+        axis=1,
+    )
+    return grp[colunas_saida].sort_values(["Mês", "Plano de Contas", "Loja"], kind="stable").reset_index(drop=True)
+
+
+def carregar_auditoria_planos() -> pd.DataFrame:
+    pasta_contas = localizar_pasta("CONTAS A PAGAR - DRE", "CONTAS A PAGAR - DRE")
+    pasta_plano = localizar_pasta("PLANO DE CONTAS - LEGENDA", "PLANO DE CONTAS - LEGENDA")
+    if not pasta_contas or not pasta_plano:
+        return pd.DataFrame()
+    return carregar_auditoria_planos_cache(
+        str(pasta_contas),
+        str(pasta_plano),
+        assinatura_pasta_excel(pasta_contas),
+        assinatura_pasta_excel(pasta_plano),
+    )
 
 def escolher_coluna_estoque(df: pd.DataFrame) -> str | None:
     normalizadas = {col: normalizar_texto(col) for col in df.columns}
@@ -1831,8 +1969,87 @@ elif pagina == "⚖️ Resultados Estratégicos":
 
 elif pagina == "⚠️ Auditoria DRE":
     st.markdown("<div class='section-title'>⚠️ Auditoria DRE</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-caption'>Conciliação do processamento e rastreabilidade de 100% dos lançamentos do Contas a Pagar por Plano de Contas.</div>", unsafe_allow_html=True)
+
     if checks is not None and not checks.empty:
-        st.dataframe(checks, use_container_width=True, hide_index=True)
+        with st.expander("🔧 Checagens técnicas das bases", expanded=False):
+            st.dataframe(checks, use_container_width=True, hide_index=True)
+
+    st.markdown("<div class='section-title'>🔎 Auditoria por Plano de Contas</div>", unsafe_allow_html=True)
+    try:
+        aud_planos = carregar_auditoria_planos()
+    except Exception as e:
+        aud_planos = pd.DataFrame()
+        st.error(f"Não foi possível gerar a auditoria por Plano de Contas: {e}")
+
+    if aud_planos.empty:
+        st.warning("Não foi possível localizar dados do CONTAS A PAGAR - DRE e do PLANO DE CONTAS - LEGENDA para a auditoria.")
+    else:
+        aud_fil = aud_planos.copy()
+        aud_fil = aud_fil[aud_fil["Mês"].isin(meses_sel) | aud_fil["Mês"].astype(str).str.lower().isin(["sem mês", "sem mes"])]
+
+        # Filtros da auditoria
+        with st.expander("Filtros da auditoria", expanded=False):
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                lojas_aud = sorted([str(x) for x in aud_fil["Loja"].dropna().unique().tolist() if str(x).strip()])
+                lojas_sel_aud = st.multiselect("Loja", lojas_aud, default=[])
+            with f2:
+                planos_aud = sorted([str(x) for x in aud_fil["Plano de Contas"].dropna().unique().tolist() if str(x).strip()])
+                planos_sel_aud = st.multiselect("Plano de Contas", planos_aud, default=[])
+            with f3:
+                destinos_aud = sorted([str(x) for x in aud_fil["Destino DRE"].dropna().unique().tolist() if str(x).strip()])
+                destinos_sel_aud = st.multiselect("Destino DRE", destinos_aud, default=[])
+
+            f4, f5 = st.columns(2)
+            with f4:
+                status_aud = st.multiselect("Status", sorted(aud_fil["Status"].dropna().unique().tolist()), default=[])
+            with f5:
+                somente_pendencias = st.checkbox("Mostrar somente pendências/divergências", value=False)
+
+        if lojas_sel_aud:
+            aud_fil = aud_fil[aud_fil["Loja"].astype(str).isin(lojas_sel_aud)]
+        if planos_sel_aud:
+            aud_fil = aud_fil[aud_fil["Plano de Contas"].astype(str).isin(planos_sel_aud)]
+        if destinos_sel_aud:
+            aud_fil = aud_fil[aud_fil["Destino DRE"].astype(str).isin(destinos_sel_aud)]
+        if status_aud:
+            aud_fil = aud_fil[aud_fil["Status"].isin(status_aud)]
+        if somente_pendencias:
+            aud_fil = aud_fil[aud_fil["Status"] != "🟢 OK"]
+
+        total_cp = float(aud_fil["Valor no Contas a Pagar"].sum())
+        total_class = float(aud_fil["Valor Classificado"].sum())
+        total_nc = float(aud_fil["Não Classificado"].sum())
+        diferenca = float(aud_fil["Diferença"].sum())
+        cobertura = (total_class / total_cp) if total_cp else 0.0
+
+        c1, c2, c3, c4, c5 = st.columns(5)
+        with c1:
+            make_kpi("Total Contas a Pagar", brl(total_cp))
+        with c2:
+            make_kpi("Valor Classificado", brl(total_class))
+        with c3:
+            make_kpi("Não Classificado", brl(total_nc))
+        with c4:
+            make_kpi("Diferença Processamento", brl(diferenca))
+        with c5:
+            make_kpi("Cobertura Classificação", pct(cobertura))
+
+        if abs(diferenca) <= 0.01:
+            st.markdown("<div class='ok-box'>🟢 CONCILIAÇÃO 100% — Todos os valores lidos no Contas a Pagar foram absorvidos pelo processamento (classificados ou identificados como não classificados).</div>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<div class='audit-box'>🔴 DIVERGÊNCIA DE PROCESSAMENTO — {brl(diferenca)} não estão conciliados entre origem e processamento.</div>", unsafe_allow_html=True)
+
+        if total_nc != 0:
+            st.warning(f"Existem {brl(total_nc)} sem classificação no DRE. Eles foram lidos e conciliados, mas precisam de mapeamento no Plano de Contas - Legenda.")
+
+        show_aud = aud_fil.copy()
+        for col in ["Valor no Contas a Pagar", "Valor Classificado", "Não Classificado", "Diferença"]:
+            show_aud[col] = show_aud[col].apply(brl)
+        st.dataframe(show_aud, use_container_width=True, hide_index=True, height=520)
+
+    st.markdown("<div class='section-title'>⚠️ Itens não classificados</div>", unsafe_allow_html=True)
     if nao_classificados.empty:
         st.markdown("<div class='ok-box'>Nenhum item não classificado encontrado.</div>", unsafe_allow_html=True)
     else:
@@ -1851,4 +2068,4 @@ elif pagina == "⚠️ Auditoria DRE":
             show["Valor"] = show["Valor"].apply(brl)
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • Plano de contas padronizado</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>EIROX FINANCIAL ANALYTICS • DRE Online Premium • Reprocessamento dinâmico pelas pastas • Plano de contas padronizado • Auditoria 100% Contas a Pagar</div>", unsafe_allow_html=True)
