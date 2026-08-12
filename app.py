@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Eirox DRE Online Premium
-VERSÃO DRE EIROX ENTERPRISE PREMIUM v2.6 - AUDITORIA DE ACESSOS + TELEGRAM
+VERSÃO DRE EIROX ENTERPRISE PREMIUM v2.7 - AUDITORIA DE ACESSOS + TELEGRAM
 
 Esta versão recalcula o DRE sempre que o app é executado, lendo diretamente as pastas:
 - CONTAS A PAGAR - DRE
@@ -593,6 +593,11 @@ def destino_dre_padrao(destino_legenda: str, conta_sistema: str, plano_contas: s
     if "COMISSOES" in origem_norm and ("PREMIACOES" in origem_norm or "PREMIACAO" in origem_norm):
         return "Comissões e Premiações"
 
+    # Empréstimos e financiamentos: a parcela integral é tratada, conforme regra
+    # gerencial aprovada, como saída de caixa na conciliação do DRE.
+    if "EMPRESTIMOS E FINANCIAMENTOS" in origem_norm or "EMPRESTIMO" in origem_norm:
+        return "Pagamento de Empréstimos (Principal)"
+
     # Padroniza destinos com observações entre parênteses / alternativas,
     # priorizando uma linha que já exista no template oficial do DRE.
     linhas_template = [linha for _, _, linha, _, _ in DRE_TEMPLATE]
@@ -711,7 +716,7 @@ def carregar_auditoria_planos_cache(
 
     colunas_saida = [
         "Plano de Contas", "Mês", "Loja", "Qtde Lançamentos",
-        "Valor no Contas a Pagar", "Valor Classificado", "Não Classificado",
+        "Valor no Contas a Pagar", "Valor no DRE", "Fora do DRE",
         "Destino DRE", "Na Legenda", "Diferença", "Status"
     ]
     if not frames:
@@ -765,8 +770,10 @@ def carregar_auditoria_planos_cache(
     contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("DAS|SIMPLES", na=False, regex=True), "Destino DRE"] = "DAS"
     contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("ISS", na=False), "Destino DRE"] = "ISSQN"
 
-    contas["Valor Classificado"] = contas["Valor Documento"].where(contas["Destino DRE"] != "NÃO CLASSIFICADO", 0.0)
-    contas["Não Classificado"] = contas["Valor Documento"].where(contas["Destino DRE"] == "NÃO CLASSIFICADO", 0.0)
+    linhas_dre = {normalizar_texto(linha) for _, _, linha, _, _ in DRE_TEMPLATE}
+    contas["Destino existe no DRE"] = contas["Destino DRE"].apply(lambda x: normalizar_texto(x) in linhas_dre)
+    contas["Valor no DRE"] = contas["Valor Documento"].where(contas["Destino existe no DRE"], 0.0)
+    contas["Fora do DRE"] = contas["Valor Documento"].where(~contas["Destino existe no DRE"], 0.0)
 
     def destinos_unicos(s: pd.Series) -> str:
         vals = [str(x).strip() for x in s if str(x).strip()]
@@ -778,17 +785,17 @@ def carregar_auditoria_planos_cache(
             **{
                 "Qtde Lançamentos": ("Valor Documento", "size"),
                 "Valor no Contas a Pagar": ("Valor Documento", "sum"),
-                "Valor Classificado": ("Valor Classificado", "sum"),
-                "Não Classificado": ("Não Classificado", "sum"),
+                "Valor no DRE": ("Valor no DRE", "sum"),
+                "Fora do DRE": ("Fora do DRE", "sum"),
                 "Destino DRE": ("Destino DRE", destinos_unicos),
             }
         )
         .reset_index()
     )
-    grp["Diferença"] = grp["Valor no Contas a Pagar"] - grp["Valor Classificado"] - grp["Não Classificado"]
+    grp["Diferença"] = grp["Valor no Contas a Pagar"] - grp["Valor no DRE"] - grp["Fora do DRE"]
     grp["Status"] = grp.apply(
         lambda r: "🔴 DIVERGÊNCIA" if abs(float(r["Diferença"])) > 0.01
-        else ("🟡 NÃO CLASSIFICADO" if float(r["Não Classificado"]) != 0 else "🟢 OK"),
+        else ("🟡 FORA DO DRE" if abs(float(r["Fora do DRE"])) > 0.01 else "🟢 NO DRE"),
         axis=1,
     )
     return grp[colunas_saida].sort_values(["Mês", "Plano de Contas", "Loja"], kind="stable").reset_index(drop=True)
@@ -805,6 +812,100 @@ def carregar_auditoria_planos() -> pd.DataFrame:
         assinatura_pasta_excel(pasta_contas),
         assinatura_pasta_excel(pasta_plano),
     )
+
+
+def carregar_auditoria_detalhada() -> pd.DataFrame:
+    """Auditoria linha a linha de 100% do arquivo CONTAS A PAGAR - DRE.
+
+    Mostra se cada lançamento foi mapeado para uma linha real do DRE e separa
+    itens pendentes/sem data de pagamento, que são lidos pelo projeto mas não
+    entram em competência fechada até o pagamento ocorrer.
+    """
+    pasta_contas = localizar_pasta("CONTAS A PAGAR - DRE", "CONTAS A PAGAR - DRE")
+    pasta_plano = localizar_pasta("PLANO DE CONTAS - LEGENDA", "PLANO DE CONTAS - LEGENDA")
+    if not pasta_contas:
+        return pd.DataFrame()
+
+    plano = carregar_plano_contas(pasta_plano) if pasta_plano else pd.DataFrame()
+    frames = []
+    for arq in arquivos_excel(pasta_contas):
+        for df in read_all_sheets(arq):
+            cols = [str(c).strip() for c in df.columns]
+            df.columns = cols
+            if "Valor Documento" in cols and "Plano de Contas" in cols:
+                frames.append(df)
+    if not frames:
+        return pd.DataFrame()
+
+    contas = pd.concat(frames, ignore_index=True)
+    contas.columns = [str(c).strip() for c in contas.columns]
+    contas["Valor Documento"] = contas["Valor Documento"].apply(parse_float)
+    contas["Plano de Contas"] = contas["Plano de Contas"].fillna("").astype(str).str.strip()
+    contas["Plano_Normalizado"] = contas["Plano de Contas"].apply(normalizar_texto)
+
+    if not plano.empty:
+        cols_plano = [c for c in ["Plano_Normalizado", "Destino DRE Legenda", "Subgrupo Legenda", "Grupo Legenda", "Conta Sistema Legenda"] if c in plano.columns]
+        contas = contas.merge(plano[cols_plano], on="Plano_Normalizado", how="left", indicator="_merge_legenda")
+        contas["Na Legenda"] = contas["_merge_legenda"].eq("both").map({True: "Sim", False: "Não"})
+    else:
+        contas["Destino DRE Legenda"] = ""
+        contas["Subgrupo Legenda"] = ""
+        contas["Grupo Legenda"] = ""
+        contas["Conta Sistema Legenda"] = ""
+        contas["Na Legenda"] = "Não"
+
+    for col in ["Destino DRE Legenda", "Subgrupo Legenda", "Grupo Legenda", "Conta Sistema Legenda"]:
+        if col not in contas.columns:
+            contas[col] = ""
+
+    contas["Destino DRE"] = contas.apply(
+        lambda r: destino_dre_padrao(
+            r.get("Destino DRE Legenda", ""),
+            r.get("Conta Sistema Legenda", ""),
+            r.get("Plano de Contas", ""),
+        ), axis=1,
+    )
+    contas["Destino DRE"] = contas["Destino DRE"].fillna("").astype(str).str.strip()
+    contas.loc[contas["Destino DRE"] == "", "Destino DRE"] = "NÃO CLASSIFICADO"
+
+    texto_busca = (
+        contas.get("Plano de Contas", pd.Series("", index=contas.index)).astype(str) + " " +
+        contas.get("Credor", pd.Series("", index=contas.index)).astype(str) + " " +
+        contas.get("Descrição", pd.Series("", index=contas.index)).astype(str)
+    ).apply(normalizar_texto)
+    contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("ICMS", na=False), "Destino DRE"] = "ICMS"
+    contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("DAS|SIMPLES", na=False, regex=True), "Destino DRE"] = "DAS"
+    contas.loc[(contas["Destino DRE"] == "NÃO CLASSIFICADO") & texto_busca.str.contains("ISS", na=False), "Destino DRE"] = "ISSQN"
+
+    data_pg = pd.to_datetime(contas["Data Pagamento"], errors="coerce", dayfirst=True) if "Data Pagamento" in contas.columns else pd.Series(pd.NaT, index=contas.index)
+    contas["Mês"] = data_pg.apply(month_label_from_date)
+    linhas_dre = {normalizar_texto(linha) for _, _, linha, _, _ in DRE_TEMPLATE}
+    contas["Destino existe no DRE"] = contas["Destino DRE"].apply(lambda x: "Sim" if normalizar_texto(x) in linhas_dre else "Não")
+    contas["Valor no DRE"] = contas["Valor Documento"].where((data_pg.notna()) & (contas["Destino existe no DRE"] == "Sim"), 0.0)
+    contas["Valor fora do DRE"] = contas["Valor Documento"] - contas["Valor no DRE"]
+
+    status_origem = contas["Status"].fillna("").astype(str) if "Status" in contas.columns else pd.Series("", index=contas.index)
+    def situacao(i):
+        if pd.isna(data_pg.loc[i]):
+            return "🔵 PENDENTE / SEM PAGAMENTO"
+        if contas.loc[i, "Destino DRE"] == "NÃO CLASSIFICADO":
+            return "🟡 SEM CLASSIFICAÇÃO"
+        if contas.loc[i, "Destino existe no DRE"] != "Sim":
+            return "🟠 DESTINO FORA DO DRE"
+        return "🟢 NO DRE"
+    contas["Situação Auditoria"] = [situacao(i) for i in contas.index]
+
+    # Campos úteis para rastrear o lançamento original.
+    campos = [
+        "Mês", "Status", "Data Pagamento", "Data de Vencimento", "Número Documento",
+        "Parcela", "Credor", "Unidade", "Apelido Un. Neg.", "Plano de Contas",
+        "Valor Documento", "Destino DRE", "Na Legenda", "Destino existe no DRE",
+        "Valor no DRE", "Valor fora do DRE", "Situação Auditoria", "Arquivo Origem"
+    ]
+    for c in campos:
+        if c not in contas.columns:
+            contas[c] = ""
+    return contas[campos].copy()
 
 def escolher_coluna_estoque(df: pd.DataFrame) -> str | None:
     normalizadas = {col: normalizar_texto(col) for col in df.columns}
@@ -2182,35 +2283,65 @@ elif pagina == "⚠️ Auditoria DRE":
             aud_fil = aud_fil[aud_fil["Status"] != "🟢 OK"]
 
         total_cp = float(aud_fil["Valor no Contas a Pagar"].sum())
-        total_class = float(aud_fil["Valor Classificado"].sum())
-        total_nc = float(aud_fil["Não Classificado"].sum())
+        total_no_dre = float(aud_fil["Valor no DRE"].sum())
+        total_fora = float(aud_fil["Fora do DRE"].sum())
         diferenca = float(aud_fil["Diferença"].sum())
-        cobertura = (total_class / total_cp) if total_cp else 0.0
+        cobertura = (total_no_dre / total_cp) if total_cp else 0.0
 
         c1, c2, c3, c4, c5 = st.columns(5)
         with c1:
             make_kpi("Total Contas a Pagar", brl(total_cp))
         with c2:
-            make_kpi("Valor Classificado", brl(total_class))
+            make_kpi("Valor no DRE", brl(total_no_dre))
         with c3:
-            make_kpi("Não Classificado", brl(total_nc))
+            make_kpi("Fora do DRE", brl(total_fora))
         with c4:
             make_kpi("Diferença Processamento", brl(diferenca))
         with c5:
-            make_kpi("Cobertura Classificação", pct(cobertura))
+            make_kpi("Cobertura no DRE", pct(cobertura))
 
-        if abs(diferenca) <= 0.01:
-            st.markdown("<div class='ok-box'>🟢 CONCILIAÇÃO 100% — Todos os valores lidos no Contas a Pagar foram absorvidos pelo processamento (classificados ou identificados como não classificados).</div>", unsafe_allow_html=True)
+        if abs(diferenca) <= 0.01 and abs(total_fora) <= 0.01:
+            st.markdown("<div class='ok-box'>🟢 AUDITORIA 100% — Todos os valores do Contas a Pagar do período filtrado estão mapeados para linhas existentes no DRE.</div>", unsafe_allow_html=True)
+        elif abs(diferenca) <= 0.01:
+            st.warning(f"O processamento está conciliado, porém existem {brl(total_fora)} lidos no Contas a Pagar que ainda não chegam a uma linha válida do DRE.")
         else:
             st.markdown(f"<div class='audit-box'>🔴 DIVERGÊNCIA DE PROCESSAMENTO — {brl(diferenca)} não estão conciliados entre origem e processamento.</div>", unsafe_allow_html=True)
 
-        if total_nc != 0:
-            st.warning(f"Existem {brl(total_nc)} sem classificação no DRE. Eles foram lidos e conciliados, mas precisam de mapeamento no Plano de Contas - Legenda.")
-
         show_aud = aud_fil.copy()
-        for col in ["Valor no Contas a Pagar", "Valor Classificado", "Não Classificado", "Diferença"]:
+        for col in ["Valor no Contas a Pagar", "Valor no DRE", "Fora do DRE", "Diferença"]:
             show_aud[col] = show_aud[col].apply(brl)
         st.dataframe(show_aud, use_container_width=True, hide_index=True, height=520)
+
+        st.markdown("<div class='section-title'>🧾 Auditoria linha a linha</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-caption'>Rastreia cada lançamento do arquivo Contas a Pagar e informa se ele está efetivamente em uma linha do DRE ou se está pendente/fora do mapeamento.</div>", unsafe_allow_html=True)
+        try:
+            aud_det = carregar_auditoria_detalhada()
+        except Exception as e:
+            aud_det = pd.DataFrame()
+            st.error(f"Erro ao gerar auditoria detalhada: {e}")
+        if not aud_det.empty:
+            # Mantém meses filtrados e também itens sem pagamento para permitir auditoria completa da origem.
+            mostrar_pendentes = st.checkbox("Incluir pendentes/sem data de pagamento", value=True, key="aud_incluir_pendentes")
+            aud_det_view = aud_det.copy()
+            if mostrar_pendentes:
+                aud_det_view = aud_det_view[aud_det_view["Mês"].isin(meses_sel) | aud_det_view["Mês"].astype(str).str.lower().isin(["sem mês", "sem mes"])]
+            else:
+                aud_det_view = aud_det_view[aud_det_view["Mês"].isin(meses_sel)]
+            status_det = sorted(aud_det_view["Situação Auditoria"].dropna().astype(str).unique().tolist())
+            status_det_sel = st.multiselect("Situação do lançamento", status_det, default=[], key="aud_status_detalhe")
+            if status_det_sel:
+                aud_det_view = aud_det_view[aud_det_view["Situação Auditoria"].isin(status_det_sel)]
+            valor_origem_det = float(aud_det_view["Valor Documento"].sum())
+            valor_dre_det = float(aud_det_view["Valor no DRE"].sum())
+            valor_fora_det = float(aud_det_view["Valor fora do DRE"].sum())
+            d1, d2, d3 = st.columns(3)
+            with d1: make_kpi("Origem auditada", brl(valor_origem_det))
+            with d2: make_kpi("Efetivamente no DRE", brl(valor_dre_det))
+            with d3: make_kpi("Pendente / Fora do DRE", brl(valor_fora_det))
+            show_det = aud_det_view.copy()
+            for col in ["Valor Documento", "Valor no DRE", "Valor fora do DRE"]:
+                show_det[col] = show_det[col].apply(brl)
+            st.dataframe(show_det, use_container_width=True, hide_index=True, height=600)
 
     # Auditoria de acessos disponível somente para administradores
     if st.session_state.get("perfil") == "admin":
